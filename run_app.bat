@@ -44,6 +44,12 @@ if errorlevel 1 (
     pip install "qrcode[pil]" -q
 )
 
+pip show PyQt6-WebEngine >nul 2>&1
+if errorlevel 1 (
+    echo 安装 PyQt6-WebEngine...
+    pip install PyQt6-WebEngine -q
+)
+
 echo.
 echo ✅ 依赖检查完成
 echo 🚀 启动应用...
