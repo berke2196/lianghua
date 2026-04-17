@@ -12,11 +12,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDoubleSpinBox, QMessageBox, QProgressBar,
-    QTextEdit, QGroupBox, QWebEngineView
+    QTextEdit, QGroupBox
 )
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtWebEngineWidgets import QWebEngineView
 from web3 import Web3
 
 from asterdex_api import AsterDexAPI
