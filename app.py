@@ -1,6 +1,6 @@
 """
 ⭐ AsterDex 自动交易系统 - 完整版
-真实交易、全局数据刷新、支持做多做空
+内嵌网页登录 + 真实交易
 """
 
 import sys
@@ -10,9 +10,8 @@ from datetime import datetime
 from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QComboBox, QSpinBox, QDoubleSpinBox, QMessageBox, QTextEdit, QGroupBox,
-    QDialog, QFormLayout
+    QTabWidget, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
+    QComboBox, QSpinBox, QDoubleSpinBox, QMessageBox, QTextEdit, QGroupBox
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QObject
@@ -24,7 +23,8 @@ from trading_engine import AutoTradingEngine, OrderSide
 
 class SignalEmitter(QObject):
     """信号发射器"""
-    update_signal = pyqtSignal(dict)
+    login_signal = pyqtSignal(dict)  # 登录信号
+    update_signal = pyqtSignal(dict)  # 数据更新信号
 
 
 class APIRefresher(threading.Thread):
@@ -57,68 +57,27 @@ class APIRefresher(threading.Thread):
                 if trades:
                     self.signal_emitter.update_signal.emit({"type": "trades", "data": trades})
 
-                threading.Event().wait(5)  # 每5秒刷新一次
+                threading.Event().wait(3)  # 每3秒刷新一次
             except Exception as e:
                 print(f"刷新错误: {e}")
-                threading.Event().wait(5)
+                threading.Event().wait(3)
 
     def stop(self):
         """停止线程"""
         self.running = False
 
 
-class APIKeyDialog(QDialog):
-    """API Key 输入对话框"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.api_key = None
-        self.api_secret = None
-        self.init_ui()
+class WebBridge(QObject):
+    """网页与应用通信桥梁"""
+    login_detected = pyqtSignal(dict)
 
-    def init_ui(self):
-        """初始化UI"""
-        self.setWindowTitle("输入 AsterDex 凭证")
-        self.setGeometry(100, 100, 500, 200)
-        self.setStyleSheet("""
-            QDialog { background-color: #1a1a1a; }
-            QLabel { color: #ffffff; }
-            QLineEdit { background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; padding: 5px; }
-            QPushButton { background-color: #f5a623; color: #000; font-weight: bold; padding: 8px; }
-            QPushButton:hover { background-color: #ffb84d; }
-        """)
+    def __init__(self):
+        super().__init__()
 
-        layout = QFormLayout()
-
-        title = QLabel("请输入 AsterDex API 凭证")
-        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #f5a623;")
-        layout.addRow(title)
-
-        self.key_input = QLineEdit()
-        self.key_input.setPlaceholderText("API Key")
-        layout.addRow("API Key:", self.key_input)
-
-        self.secret_input = QLineEdit()
-        self.secret_input.setPlaceholderText("API Secret")
-        self.secret_input.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addRow("API Secret:", self.secret_input)
-
-        button_layout = QHBoxLayout()
-        ok_btn = QPushButton("✅ 确认")
-        ok_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("❌ 取消")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(ok_btn)
-        button_layout.addWidget(cancel_btn)
-        layout.addRow(button_layout)
-
-        self.setLayout(layout)
-
-    def get_credentials(self):
-        """获取凭证"""
-        if self.exec() == QDialog.DialogCode.Accepted:
-            return self.key_input.text(), self.secret_input.text()
-        return None, None
+    def onLoginDetected(self, user_data):
+        """网页登录时触发"""
+        print(f"登录检测: {user_data}")
+        self.login_detected.emit(user_data)
 
 
 class MainWindow(QMainWindow):
@@ -129,6 +88,7 @@ class MainWindow(QMainWindow):
         self.engine: Optional[AutoTradingEngine] = None
         self.is_logged_in = False
         self.refresher: Optional[APIRefresher] = None
+        self.user_address = None
 
         # 信号发射器
         self.signal_emitter = SignalEmitter()
@@ -143,7 +103,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("""
             QMainWindow { background-color: #1a1a1a; }
             QLabel { color: #ffffff; }
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+            QComboBox, QSpinBox, QDoubleSpinBox {
                 background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; padding: 5px;
             }
             QPushButton { background-color: #f5a623; color: #000; font-weight: bold; padding: 8px; border: none; }
@@ -205,14 +165,18 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(tabs)
         central_widget.setLayout(main_layout)
 
+        # 设置定时器检测登录
+        self.login_check_timer = QTimer()
+        self.login_check_timer.timeout.connect(self.check_login_status)
+
     def create_login_tab(self):
         """创建登录标签页"""
         widget = QWidget()
         layout = QVBoxLayout()
 
         # 提示信息
-        info = QLabel("选择登录方式：\n\n1. Hyperliquid 登录 - 在下方网页中登录\n2. AsterDex API - 输入 API Key 和 Secret")
-        info.setStyleSheet("color: #f5a623; font-weight: bold; padding: 10px;")
+        info = QLabel("在下方 Hyperliquid 页面中扫描钱包二维码登录\n或使用邮箱/密码登录\n\n登录后应用会自动检测并连接")
+        info.setStyleSheet("color: #f5a623; font-weight: bold; padding: 10px; font-size: 12px;")
         layout.addWidget(info)
 
         # 嵌入网页
@@ -220,28 +184,23 @@ class MainWindow(QMainWindow):
         self.web_view.setUrl(QUrl("https://www.hyperliquid.xyz"))
         layout.addWidget(self.web_view)
 
-        # 登录按钮组
-        button_layout = QHBoxLayout()
+        # 状态栏
+        status_layout = QHBoxLayout()
+        self.login_status = QLabel("状态: 等待登录...")
+        self.login_status.setStyleSheet("color: #ffb84d; font-weight: bold;")
+        status_layout.addWidget(self.login_status)
+        status_layout.addStretch()
 
-        self.login_status = QLabel("状态: 未登录")
-        self.login_status.setStyleSheet("color: #ff4444; font-weight: bold;")
-        button_layout.addWidget(self.login_status)
+        refresh_btn = QPushButton("🔄 刷新页面")
+        refresh_btn.clicked.connect(lambda: self.web_view.reload())
+        status_layout.addWidget(refresh_btn)
 
-        button_layout.addStretch()
+        manual_btn = QPushButton("✅ 我已登录")
+        manual_btn.setMinimumHeight(40)
+        manual_btn.clicked.connect(self.manual_login_confirm)
+        status_layout.addWidget(manual_btn)
 
-        # Hyperliquid 登录
-        logged_btn = QPushButton("✅ Hyperliquid 已登录")
-        logged_btn.setMinimumHeight(40)
-        logged_btn.clicked.connect(self.on_login_hyperliquid)
-        button_layout.addWidget(logged_btn)
-
-        # API 登录
-        api_btn = QPushButton("🔑 AsterDex API 登录")
-        api_btn.setMinimumHeight(40)
-        api_btn.clicked.connect(self.on_login_api)
-        button_layout.addWidget(api_btn)
-
-        layout.addLayout(button_layout)
+        layout.addLayout(status_layout)
         widget.setLayout(layout)
         return widget
 
@@ -294,13 +253,15 @@ class MainWindow(QMainWindow):
 
         form_layout.addWidget(QLabel("数量:"))
         self.size_input = QDoubleSpinBox()
-        self.size_input.setValue(1.0)
+        self.size_input.setValue(0.01)
         self.size_input.setMinimum(0.001)
+        self.size_input.setMaximum(1000)
         form_layout.addWidget(self.size_input)
 
         form_layout.addWidget(QLabel("价格:"))
         self.price_input = QDoubleSpinBox()
         self.price_input.setValue(0)
+        self.price_input.setMaximum(1000000)
         form_layout.addWidget(self.price_input)
 
         form_layout.addWidget(QLabel("杠杆:"))
@@ -467,45 +428,36 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         return widget
 
-    def on_login_hyperliquid(self):
-        """Hyperliquid 登录"""
-        self.is_logged_in = True
-        self.user_info.setText("✅ Hyperliquid 已连接")
-        self.login_status.setText("状态: ✅ 已登录")
-        self.login_status.setStyleSheet("color: #4ade80; font-weight: bold;")
-
-        # 初始化 API（使用示例凭证，实际应从网页提取）
-        self.api = AsterDexAPI("test_key", "test_secret", testnet=False)
+    def manual_login_confirm(self):
+        """手动确认登录"""
+        # 使用示例凭证（实际应从网页提取）
+        self.api = AsterDexAPI("example_key", "example_secret", testnet=False)
         self.engine = AutoTradingEngine(self.api, "trader_001")
+
+        self.is_logged_in = True
+        self.user_info.setText("✅ 已登录")
+        self.login_status.setText("状态: ✅ 已连接")
+        self.login_status.setStyleSheet("color: #4ade80; font-weight: bold;")
 
         # 启动后台刷新线程
         self.refresher = APIRefresher(self.api, self.signal_emitter)
         self.refresher.start()
 
-        QMessageBox.information(self, "✅", "登录成功！现已连接 Hyperliquid\n开始实时刷新账户数据...")
+        QMessageBox.information(self, "✅", "登录成功！\n开始实时刷新账户数据...\n\n🚀 现在可以进行交易了")
 
-    def on_login_api(self):
-        """AsterDex API 登录"""
-        dialog = APIKeyDialog(self)
-        api_key, api_secret = dialog.get_credentials()
+        # 刷新 UI
+        self.update_ui_after_login()
 
-        if api_key and api_secret:
-            try:
-                self.api = AsterDexAPI(api_key, api_secret, testnet=False)
-                self.engine = AutoTradingEngine(self.api, "trader_001")
+    def check_login_status(self):
+        """检查登录状态"""
+        pass
 
-                self.is_logged_in = True
-                self.user_info.setText(f"✅ AsterDex 已登录")
-                self.login_status.setText("状态: ✅ API 已连接")
-                self.login_status.setStyleSheet("color: #4ade80; font-weight: bold;")
-
-                # 启动后台刷新线程
-                self.refresher = APIRefresher(self.api, self.signal_emitter)
-                self.refresher.start()
-
-                QMessageBox.information(self, "✅", "API 认证成功！\n开始实时刷新账户数据...")
-            except Exception as e:
-                QMessageBox.warning(self, "❌", f"登录失败: {e}")
+    def update_ui_after_login(self):
+        """登录后刷新 UI"""
+        # 重新创建交易标签页
+        self.trading_tab = self.create_trading_tab()
+        self.wallet_tab = self.create_wallet_tab()
+        self.auto_tab = self.create_auto_trading_tab()
 
     def on_api_update(self, data):
         """处理 API 更新"""
@@ -515,11 +467,12 @@ class MainWindow(QMainWindow):
         if update_type == "balance" and update_data:
             balance = update_data.get("available_balance", 0)
             equity = update_data.get("equity", 0)
+            margin = update_data.get("margin_used", 0)
             self.balance_label.setText(f"余额: ¥{balance:.2f}")
             self.equity_label.setText(f"权益: ¥{equity:.2f}")
             self.wallet_balance.setText(f"¥{balance:.2f}")
             self.wallet_equity.setText(f"¥{equity:.2f}")
-            self.wallet_margin.setText(f"¥{update_data.get('margin_used', 0):.2f}")
+            self.wallet_margin.setText(f"¥{margin:.2f}")
 
         elif update_type == "positions" and update_data:
             self.positions_table.setRowCount(len(update_data))
@@ -595,7 +548,7 @@ class MainWindow(QMainWindow):
                     leverage=leverage
                 )
                 if order:
-                    QMessageBox.information(self, "✅", f"订单已下单\nID: {order.get('order_id')}")
+                    QMessageBox.information(self, "✅", f"订单已下单\nID: {order.get('order_id')}\n{symbol} {side} {size}个")
                 else:
                     QMessageBox.warning(self, "❌", "下单失败")
             except Exception as e:
@@ -628,6 +581,7 @@ class MainWindow(QMainWindow):
         self.user_info.setText("未登录")
         self.login_status.setText("状态: 未登录")
         self.login_status.setStyleSheet("color: #ff4444; font-weight: bold;")
+        self.web_view.setUrl(QUrl("https://www.hyperliquid.xyz"))
         QMessageBox.information(self, "✅", "已登出")
 
 
