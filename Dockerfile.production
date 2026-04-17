@@ -1,0 +1,85 @@
+# Production-ready multi-stage Dockerfile
+# Optimized for security, size, and performance
+
+FROM python:3.11-slim as builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Build wheels
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+
+
+FROM python:3.11-slim as runtime
+
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wheels from builder
+COPY --from=builder /build/wheels /wheels
+COPY --from=builder /build/requirements.txt .
+
+# Install Python dependencies from wheels
+RUN pip install --no-cache /wheels/*
+
+# Create non-root user
+RUN useradd -m -u 1000 trading && chown -R trading:trading /app
+
+USER trading
+
+# Copy application
+COPY --chown=trading:trading . .
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
+
+# Expose ports
+EXPOSE 8000 9090 3000
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
+# Run application
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+# Prometheus metrics exporter stage
+FROM runtime as metrics
+
+EXPOSE 9090
+
+CMD ["python", "-m", "prometheus_client", "--addr", "0.0.0.0", "--port", "9090"]
+
+
+# Development stage with additional tools
+FROM runtime as development
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    vim \
+    gdb \
+    && rm -rf /var/lib/apt/lists/*
+
+USER trading
+
+ENV DEBUG=1 \
+    LOG_LEVEL=DEBUG
+
+CMD ["python", "-m", "pytest", "--cov=.", "--cov-report=html"]
