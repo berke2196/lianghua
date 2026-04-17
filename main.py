@@ -6,7 +6,7 @@ Hyperliquid AI Trader v2 - AsterDex 集成版
 
 from fastapi import FastAPI, WebSocket, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthCredential
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 import logging
 import asyncio
@@ -58,7 +58,7 @@ async def startup():
 
 
 # ============ 认证依赖 ============
-async def verify_token(credentials: HTTPAuthCredential = Depends(security)) -> str:
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """验证 Bearer Token"""
     token = credentials.credentials
     if token not in authenticated_users:
