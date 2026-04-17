@@ -32,6 +32,18 @@ if errorlevel 1 (
     pip install numpy -q
 )
 
+pip show web3 >nul 2>&1
+if errorlevel 1 (
+    echo 安装 web3...
+    pip install web3 -q
+)
+
+pip show qrcode >nul 2>&1
+if errorlevel 1 (
+    echo 安装 qrcode...
+    pip install "qrcode[pil]" -q
+)
+
 echo.
 echo ✅ 依赖检查完成
 echo 🚀 启动应用...

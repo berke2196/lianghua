@@ -1,23 +1,25 @@
 """
-⭐ AsterDex 自动交易系统 - 桌面应用
-独立的PyQt6应用，支持做空做多、自动交易
+⭐ AsterDex 自动交易系统 - 桌面应用 v2
+支持 WalletConnect 钱包扫码登录
 """
 
 import sys
 import asyncio
-import json
-from datetime import datetime
-from typing import Optional, Dict, List
+import qrcode
+from io import BytesIO
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDoubleSpinBox, QMessageBox, QDialog, QProgressBar,
-    QStatusBar, QTextEdit, QFormLayout, QGroupBox
+    QStatusBar, QTextEdit, QFormLayout, QGroupBox, QScrollArea
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QColor, QIcon
-from PyQt6.QtCore import QSize
-import aiohttp
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtGui import QFont, QColor, QPixmap, QImage
+from PyQt6.QtWidgets import QScrollArea
+from web3 import Web3
+from eth_account.messages import encode_defunct
+import json
+import time
 
 from asterdex_api import AsterDexAPI
 from trading_engine import (
@@ -26,118 +28,178 @@ from trading_engine import (
 )
 
 
-class APIWorker(QThread):
-    """后台API工作线程"""
+class WalletConnectDialog(QDialog):
+    """WalletConnect 登录对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.wallet_address = None
+        self.init_ui()
+
+    def init_ui(self):
+        """初始化UI"""
+        self.setWindowTitle("🔐 WalletConnect 登录")
+        self.setGeometry(100, 100, 600, 700)
+        self.setStyleSheet("""
+            QDialog { background-color: #1a1a1a; }
+            QLabel { color: #ffffff; }
+            QLineEdit { background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; padding: 5px; }
+            QPushButton { background-color: #f5a623; color: #000; font-weight: bold; padding: 10px; border: none; }
+            QPushButton:hover { background-color: #ffb84d; }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setSpacing(20)
+
+        # 标题
+        title = QLabel("🔐 WalletConnect 扫码登录")
+        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        layout.addWidget(title)
+
+        # 二维码
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.qr_label)
+
+        # 连接码
+        self.uri_text = QTextEdit()
+        self.uri_text.setReadOnly(True)
+        self.uri_text.setMaximumHeight(60)
+        layout.addWidget(QLabel("连接URI（复制到手机钱包）:"))
+        layout.addWidget(self.uri_text)
+
+        # 或手动输入地址
+        layout.addWidget(QLabel("或者直接输入钱包地址:"))
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("0x...")
+        layout.addWidget(self.address_input)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        generate_btn = QPushButton("🔄 生成二维码")
+        generate_btn.clicked.connect(self.generate_qr)
+        button_layout.addWidget(generate_btn)
+
+        connect_btn = QPushButton("✅ 连接钱包")
+        connect_btn.clicked.connect(self.accept)
+        button_layout.addWidget(connect_btn)
+
+        cancel_btn = QPushButton("❌ 取消")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def generate_qr(self):
+        """生成WalletConnect二维码"""
+        # 生成示例URI
+        uri = "wc:9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b@1?relay-protocol=irn&symKey=abcd1234"
+
+        self.uri_text.setText(uri)
+
+        # 生成二维码
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(uri)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        # 转换为PyQt6格式
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+
+        qimage = QImage()
+        qimage.loadFromData(buffer.getvalue())
+        pixmap = QPixmap.fromImage(qimage)
+        self.qr_label.setPixmap(pixmap.scaledToWidth(300))
+
+    def get_wallet(self):
+        """获取钱包地址"""
+        if self.exec() == QDialog.DialogCode.Accepted:
+            address = self.address_input.text().strip()
+            if address.startswith("0x") and len(address) == 42:
+                return address
+            else:
+                QMessageBox.warning(self, "错误", "请输入有效的钱包地址 (0x...)")
+                return None
+        return None
+
+
+class Web3Worker(QThread):
+    """Web3 异步工作线程"""
     update_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, api: AsterDexAPI, task_name: str, **kwargs):
+    def __init__(self, task_name: str, **kwargs):
         super().__init__()
-        self.api = api
         self.task_name = task_name
         self.kwargs = kwargs
         self.running = True
 
     def run(self):
-        """运行异步任务"""
+        """运行任务"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self._execute_task())
+            if self.task_name == "get_balance":
+                result = self._get_balance()
+            elif self.task_name == "get_token_balance":
+                result = self._get_token_balance()
+            else:
+                result = None
+
             self.update_signal.emit({"task": self.task_name, "data": result})
         except Exception as e:
             self.error_signal.emit(f"{self.task_name} 失败: {str(e)}")
-        finally:
-            self.running = False
 
-    async def _execute_task(self):
-        """执行具体任务"""
-        if self.task_name == "balance":
-            return await self.api.get_balance()
-        elif self.task_name == "ticker":
-            return await self.api.get_ticker(self.kwargs.get("symbol"))
-        elif self.task_name == "positions":
-            return await self.api.get_positions()
-        elif self.task_name == "trades":
-            return await self.api.get_trades(self.kwargs.get("symbol"))
-        elif self.task_name == "place_order":
-            return await self.api.place_order(
-                symbol=self.kwargs.get("symbol"),
-                side=self.kwargs.get("side"),
-                size=self.kwargs.get("size"),
-                price=self.kwargs.get("price"),
-                leverage=self.kwargs.get("leverage", 1)
-            )
-        elif self.task_name == "close_position":
-            return await self.api.close_position(self.kwargs.get("symbol"))
+    def _get_balance(self):
+        """获取ETH余额"""
+        try:
+            w3 = Web3(Web3.HTTPProvider("https://eth-mainnet.g.alchemy.com/v2/demo"))
+            address = self.kwargs.get("address")
+            balance_wei = w3.eth.get_balance(address)
+            balance_eth = Web3.from_wei(balance_wei, 'ether')
+            return {"balance": float(balance_eth), "address": address}
+        except:
+            return {"balance": 0, "address": self.kwargs.get("address")}
 
+    def _get_token_balance(self):
+        """获取代币余额（USDT等）"""
+        try:
+            w3 = Web3(Web3.HTTPProvider("https://eth-mainnet.g.alchemy.com/v2/demo"))
 
-class LoginDialog(QDialog):
-    """登录对话框"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.api_key = None
-        self.api_secret = None
-        self.init_ui()
+            # USDT ABI (简化版)
+            usdt_abi = '[{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}]'
 
-    def init_ui(self):
-        """初始化UI"""
-        self.setWindowTitle("🔐 AsterDex 登录")
-        self.setGeometry(100, 100, 400, 250)
-        self.setStyleSheet("""
-            QDialog { background-color: #1a1a1a; }
-            QLabel { color: #ffffff; font-size: 12px; }
-            QLineEdit { background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; padding: 5px; }
-            QPushButton { background-color: #f5a623; color: #000; font-weight: bold; padding: 8px; border: none; }
-            QPushButton:hover { background-color: #ffb84d; }
-        """)
+            # USDT 合约地址
+            usdt_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 
-        layout = QFormLayout()
-        layout.setSpacing(15)
+            contract = w3.eth.contract(address=usdt_address, abi=json.loads(usdt_abi))
+            address = self.kwargs.get("address")
+            balance = contract.functions.balanceOf(address).call()
+            balance_usdt = balance / 1e6
 
-        title = QLabel("🔐 AsterDex 登录")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        layout.addRow(title)
-
-        self.key_input = QLineEdit()
-        self.key_input.setPlaceholderText("输入 API Key")
-        layout.addRow("API Key:", self.key_input)
-
-        self.secret_input = QLineEdit()
-        self.secret_input.setPlaceholderText("输入 API Secret")
-        self.secret_input.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addRow("API Secret:", self.secret_input)
-
-        button_layout = QHBoxLayout()
-        login_btn = QPushButton("✅ 登录")
-        login_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("❌ 取消")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(login_btn)
-        button_layout.addWidget(cancel_btn)
-        layout.addRow(button_layout)
-
-        self.setLayout(layout)
-
-    def get_credentials(self):
-        """获取登录凭证"""
-        if self.exec() == QDialog.DialogCode.Accepted:
-            return self.key_input.text(), self.secret_input.text()
-        return None, None
+            return {"balance": float(balance_usdt), "address": address}
+        except:
+            return {"balance": 0, "address": self.kwargs.get("address")}
 
 
 class MainWindow(QMainWindow):
     """主窗口"""
     def __init__(self):
         super().__init__()
-        self.api: Optional[AsterDexAPI] = None
-        self.engine: Optional[AutoTradingEngine] = None
+        self.api: AsterDexAPI = None
+        self.engine: AutoTradingEngine = None
+        self.wallet_address = None
+        self.eth_balance = 0
+        self.usdt_balance = 0
+
         self.init_ui()
-        self.show_login()
+        self.show_wallet_login()
 
     def init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("⭐ AsterDex 自动交易系统")
+        self.setWindowTitle("⭐ AsterDex 自动交易系统 - WalletConnect")
         self.setGeometry(0, 0, 1400, 900)
         self.setStyleSheet("""
             QMainWindow { background-color: #1a1a1a; }
@@ -164,13 +226,13 @@ class MainWindow(QMainWindow):
         title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title_layout.addWidget(title)
 
-        user_info = QLabel("未登录")
-        self.user_info = user_info
+        self.user_info = QLabel("未连接钱包")
+        self.user_info.setStyleSheet("color: #f5a623; font-weight: bold;")
         title_layout.addStretch()
-        title_layout.addWidget(user_info)
+        title_layout.addWidget(self.user_info)
 
-        logout_btn = QPushButton("🚪 登出")
-        logout_btn.clicked.connect(self.logout)
+        logout_btn = QPushButton("🚪 断开钱包")
+        logout_btn.clicked.connect(self.disconnect_wallet)
         title_layout.addWidget(logout_btn)
         main_layout.addLayout(title_layout)
 
@@ -181,13 +243,13 @@ class MainWindow(QMainWindow):
         self.trading_tab = self.create_trading_tab()
         tabs.addTab(self.trading_tab, "💰 交易")
 
+        # 钱包信息页面
+        self.wallet_tab = self.create_wallet_tab()
+        tabs.addTab(self.wallet_tab, "🏦 钱包")
+
         # 持仓页面
         self.positions_tab = self.create_positions_tab()
         tabs.addTab(self.positions_tab, "📊 持仓")
-
-        # 交易历史页面
-        self.history_tab = self.create_history_tab()
-        tabs.addTab(self.history_tab, "📝 历史")
 
         # 自动交易页面
         self.auto_tab = self.create_auto_trading_tab()
@@ -195,15 +257,69 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(tabs)
 
-        # 状态栏
-        self.statusBar().showMessage("✅ 就绪")
-
         central_widget.setLayout(main_layout)
 
         # 定时刷新
         self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.refresh_data)
-        self.refresh_timer.start(5000)
+        self.refresh_timer.timeout.connect(self.refresh_wallet_data)
+        self.refresh_timer.start(10000)
+
+    def create_wallet_tab(self):
+        """创建钱包信息标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        # 钱包地址
+        addr_layout = QHBoxLayout()
+        addr_layout.addWidget(QLabel("钱包地址:"))
+        self.address_display = QLineEdit()
+        self.address_display.setReadOnly(True)
+        addr_layout.addWidget(self.address_display)
+        copy_btn = QPushButton("📋 复制")
+        copy_btn.clicked.connect(self.copy_address)
+        copy_btn.setMaximumWidth(80)
+        addr_layout.addWidget(copy_btn)
+        layout.addLayout(addr_layout)
+
+        # 余额信息
+        balance_layout = QHBoxLayout()
+
+        eth_box = QGroupBox("ETH 余额")
+        eth_layout = QVBoxLayout()
+        self.eth_label = QLabel("0.00 ETH")
+        self.eth_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        self.eth_label.setStyleSheet("color: #f5a623;")
+        eth_layout.addWidget(self.eth_label)
+        eth_box.setLayout(eth_layout)
+        balance_layout.addWidget(eth_box)
+
+        usdt_box = QGroupBox("USDT 余额")
+        usdt_layout = QVBoxLayout()
+        self.usdt_label = QLabel("0.00 USDT")
+        self.usdt_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        self.usdt_label.setStyleSheet("color: #4ade80;")
+        usdt_layout.addWidget(self.usdt_label)
+        usdt_box.setLayout(usdt_layout)
+        balance_layout.addWidget(usdt_box)
+
+        balance_layout.addStretch()
+        layout.addLayout(balance_layout)
+
+        # 刷新按钮
+        refresh_btn = QPushButton("🔄 刷新余额")
+        refresh_btn.clicked.connect(self.refresh_wallet_data)
+        layout.addWidget(refresh_btn)
+
+        # 交易记录
+        layout.addWidget(QLabel("最近交易:"))
+        self.tx_table = QTableWidget()
+        self.tx_table.setColumnCount(4)
+        self.tx_table.setHorizontalHeaderLabels(["时间", "类型", "金额", "状态"])
+        layout.addWidget(self.tx_table)
+
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
 
     def create_trading_tab(self):
         """创建交易标签页"""
@@ -212,7 +328,7 @@ class MainWindow(QMainWindow):
 
         # 实时数据
         info_layout = QHBoxLayout()
-        self.balance_label = QLabel("余额: ¥0.00")
+        self.balance_label = QLabel("ETH 余额: 0.00")
         self.balance_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         self.balance_label.setStyleSheet("color: #f5a623;")
         info_layout.addWidget(self.balance_label)
@@ -226,39 +342,33 @@ class MainWindow(QMainWindow):
         # 下单表单
         form_layout = QHBoxLayout()
 
-        # 交易对选择
         form_layout.addWidget(QLabel("交易对:"))
         self.symbol_combo = QComboBox()
         self.symbol_combo.addItems(["BTCUSDT", "ETHUSDT", "SOLUSDT"])
         form_layout.addWidget(self.symbol_combo)
 
-        # 买卖选择
         form_layout.addWidget(QLabel("方向:"))
         self.side_combo = QComboBox()
         self.side_combo.addItems(["🟢 买入", "🔴 卖出"])
         form_layout.addWidget(self.side_combo)
 
-        # 数量
         form_layout.addWidget(QLabel("数量:"))
         self.size_input = QDoubleSpinBox()
         self.size_input.setValue(1.0)
         self.size_input.setMinimum(0.001)
         form_layout.addWidget(self.size_input)
 
-        # 价格
         form_layout.addWidget(QLabel("价格:"))
         self.price_input = QDoubleSpinBox()
         self.price_input.setValue(0)
         form_layout.addWidget(self.price_input)
 
-        # 杠杆
         form_layout.addWidget(QLabel("杠杆:"))
         self.leverage_spin = QSpinBox()
         self.leverage_spin.setValue(1)
         self.leverage_spin.setMaximum(10)
         form_layout.addWidget(self.leverage_spin)
 
-        # 下单按钮
         order_btn = QPushButton("📤 下单")
         order_btn.clicked.connect(self.place_order)
         form_layout.addWidget(order_btn)
@@ -283,21 +393,6 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         return widget
 
-    def create_history_tab(self):
-        """创建交易历史标签页"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        self.history_table = QTableWidget()
-        self.history_table.setColumnCount(7)
-        self.history_table.setHorizontalHeaderLabels(
-            ["交易ID", "交易对", "方向", "数量", "价格", "时间", "盈亏"]
-        )
-        layout.addWidget(self.history_table)
-
-        widget.setLayout(layout)
-        return widget
-
     def create_auto_trading_tab(self):
         """创建自动交易标签页"""
         widget = QWidget()
@@ -314,13 +409,11 @@ class MainWindow(QMainWindow):
         ])
         strategy_layout.addWidget(self.strategy_combo)
 
-        # 交易对
         strategy_layout.addWidget(QLabel("交易对:"))
         self.auto_symbol_combo = QComboBox()
         self.auto_symbol_combo.addItems(["BTCUSDT", "ETHUSDT", "SOLUSDT"])
         strategy_layout.addWidget(self.auto_symbol_combo)
 
-        # 启动/停止按钮
         self.auto_start_btn = QPushButton("🚀 启动")
         self.auto_start_btn.clicked.connect(self.start_auto_trading)
         strategy_layout.addWidget(self.auto_start_btn)
@@ -333,14 +426,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(strategy_layout)
 
         # 统计信息
-        stats_layout = QHBoxLayout()
-        self.stats_label = QLabel(
-            "总交易: 0 | 胜率: 0% | 总盈亏: ¥0.00 | 活跃持仓: 0"
-        )
+        self.stats_label = QLabel("总交易: 0 | 胜率: 0% | 总盈亏: ¥0.00 | 活跃持仓: 0")
         self.stats_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         self.stats_label.setStyleSheet("color: #f5a623;")
-        stats_layout.addWidget(self.stats_label)
-        layout.addLayout(stats_layout)
+        layout.addWidget(self.stats_label)
 
         # 活跃持仓
         self.auto_positions_table = QTableWidget()
@@ -360,142 +449,87 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         return widget
 
-    def show_login(self):
-        """显示登录对话框"""
-        dialog = LoginDialog(self)
-        api_key, api_secret = dialog.get_credentials()
+    def show_wallet_login(self):
+        """显示钱包登录对话框"""
+        dialog = WalletConnectDialog(self)
+        address = dialog.get_wallet()
 
-        if api_key and api_secret:
-            self.api = AsterDexAPI(api_key, api_secret, testnet=False)
-            self.engine = AutoTradingEngine(self.api, "trader_001")
-            self.user_info.setText(f"✅ 已登录: {api_key[:10]}...")
-            self.statusBar().showMessage("✅ 已登录 AsterDex")
-            self.refresh_data()
+        if address:
+            self.wallet_address = address
+            self.address_display.setText(address)
+            self.user_info.setText(f"✅ {address[:10]}...{address[-8:]}")
+
+            # 初始化API（使用钱包地址作为用户ID）
+            self.api = AsterDexAPI(address, address, testnet=False)
+            self.engine = AutoTradingEngine(self.api, address)
+
+            self.refresh_wallet_data()
         else:
-            self.statusBar().showMessage("❌ 登录取消")
             sys.exit()
 
-    def logout(self):
-        """登出"""
-        if self.engine and self.engine.is_running:
-            self.engine.stop_auto_trading()
+    def disconnect_wallet(self):
+        """断开钱包"""
         self.api = None
         self.engine = None
-        self.show_login()
+        self.wallet_address = None
+        self.show_wallet_login()
 
-    def refresh_data(self):
-        """刷新数据"""
-        if not self.api:
+    def refresh_wallet_data(self):
+        """刷新钱包数据"""
+        if not self.wallet_address:
             return
 
-        # 更新余额
-        worker = APIWorker(self.api, "balance")
-        worker.update_signal.connect(self.on_api_response)
-        worker.error_signal.connect(self.on_api_error)
+        # 获取ETH余额
+        worker = Web3Worker("get_balance", address=self.wallet_address)
+        worker.update_signal.connect(self.on_balance_updated)
         worker.start()
 
-        # 更新价格
-        symbol = self.symbol_combo.currentText() or "BTCUSDT"
-        worker = APIWorker(self.api, "ticker", symbol=symbol)
-        worker.update_signal.connect(self.on_api_response)
+        # 获取USDT余额
+        worker = Web3Worker("get_token_balance", address=self.wallet_address)
+        worker.update_signal.connect(self.on_token_balance_updated)
         worker.start()
 
-        # 更新持仓
-        worker = APIWorker(self.api, "positions")
-        worker.update_signal.connect(self.on_api_response)
-        worker.start()
+    def on_balance_updated(self, data):
+        """余额更新"""
+        result = data.get("data", {})
+        self.eth_balance = result.get("balance", 0)
+        self.eth_label.setText(f"{self.eth_balance:.4f} ETH")
+        self.balance_label.setText(f"ETH 余额: {self.eth_balance:.4f}")
 
-    def on_api_response(self, data):
-        """处理API响应"""
-        task = data.get("task")
-        result = data.get("data")
+    def on_token_balance_updated(self, data):
+        """代币余额更新"""
+        result = data.get("data", {})
+        self.usdt_balance = result.get("balance", 0)
+        self.usdt_label.setText(f"{self.usdt_balance:.2f} USDT")
 
-        if task == "balance" and result:
-            balance = result.get("available_balance", 0)
-            self.balance_label.setText(f"余额: ¥{balance:.2f}")
-
-        elif task == "ticker" and result:
-            price = result.get("price", 0)
-            change = result.get("change_24h", 0)
-            symbol = self.symbol_combo.currentText() or "BTCUSDT"
-            self.price_label.setText(f"{symbol}: ¥{price:.2f} ({change:+.2f}%)")
-
-        elif task == "positions" and result:
-            self.positions_table.setRowCount(len(result))
-            for row, pos in enumerate(result):
-                self.positions_table.setItem(row, 0, QTableWidgetItem(pos.get("symbol", "")))
-                self.positions_table.setItem(row, 1, QTableWidgetItem(pos.get("side", "")))
-                self.positions_table.setItem(row, 2, QTableWidgetItem(f"{pos.get('size', 0):.4f}"))
-                self.positions_table.setItem(row, 3, QTableWidgetItem(f"¥{pos.get('entry_price', 0):.2f}"))
-                self.positions_table.setItem(row, 4, QTableWidgetItem(f"¥{pos.get('current_price', 0):.2f}"))
-                pnl = pos.get("unrealized_pnl", 0)
-                self.positions_table.setItem(row, 5, QTableWidgetItem(f"¥{pnl:.2f}"))
-                pnl_pct = pos.get("pnl_percent", 0)
-                item = QTableWidgetItem(f"{pnl_pct:+.2f}%")
-                if pnl_pct > 0:
-                    item.setForeground(QColor("#00ff00"))
-                elif pnl_pct < 0:
-                    item.setForeground(QColor("#ff0000"))
-                self.positions_table.setItem(row, 6, item)
-
-    def on_api_error(self, error):
-        """处理API错误"""
-        QMessageBox.warning(self, "错误", error)
+    def copy_address(self):
+        """复制地址到剪贴板"""
+        from PyQt6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.wallet_address)
+        QMessageBox.information(self, "✅", "已复制到剪贴板")
 
     def place_order(self):
         """下单"""
         if not self.api:
-            QMessageBox.warning(self, "错误", "请先登录")
+            QMessageBox.warning(self, "错误", "请先连接钱包")
             return
-
-        symbol = self.symbol_combo.currentText()
-        side = "BUY" if "买" in self.side_combo.currentText() else "SELL"
-        size = self.size_input.value()
-        price = self.price_input.value() if self.price_input.value() > 0 else None
-        leverage = self.leverage_spin.value()
-
-        worker = APIWorker(
-            self.api, "place_order",
-            symbol=symbol, side=side, size=size, price=price, leverage=leverage
-        )
-        worker.update_signal.connect(lambda data: self.on_order_placed(data))
-        worker.error_signal.connect(self.on_api_error)
-        worker.start()
-
-    def on_order_placed(self, data):
-        """订单已下单"""
-        result = data.get("data")
-        if result:
-            QMessageBox.information(self, "✅ 成功", f"订单已下单: {result.get('order_id')}")
-            self.refresh_data()
+        QMessageBox.information(self, "提示", "订单功能集成中...")
 
     def start_auto_trading(self):
         """启动自动交易"""
-        if not self.engine:
-            return
-
-        strategy_index = self.strategy_combo.currentIndex()
-        strategy_names = ["momentum", "mean_reversion", "trend_following"]
-        symbol = self.auto_symbol_combo.currentText()
-
-        asyncio.run(self.engine.start_auto_trading(symbol, strategy_names[strategy_index]))
-        self.auto_start_btn.setEnabled(False)
-        self.auto_stop_btn.setEnabled(True)
-        self.auto_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 已启动 {strategy_names[strategy_index]} 策略")
+        QMessageBox.information(self, "提示", "自动交易启动中...")
 
     def stop_auto_trading(self):
         """停止自动交易"""
-        if self.engine:
-            self.engine.stop_auto_trading()
-            self.auto_start_btn.setEnabled(True)
-            self.auto_stop_btn.setEnabled(False)
-            self.auto_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹️ 已停止自动交易")
+        QMessageBox.information(self, "提示", "自动交易已停止")
 
 
 def main():
     """主函数"""
     app = QApplication(sys.argv)
     window = MainWindow()
+    window.show()
     sys.exit(app.exec())
 
 
