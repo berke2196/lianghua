@@ -7,29 +7,29 @@ let mainWindow;
 // 创建主窗口
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1600,
+    width: 1400,
     height: 900,
-    minWidth: 1200,
+    minWidth: 1100,
     minHeight: 700,
+    title: 'AsterDex HFT Trader v5.0',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false
+      enableRemoteModule: false,
+      webSecurity: true,                     // ✅ FIXED: Enable web security
+      allowRunningInsecureContent: false,    // ✅ FIXED: Disable mixed content
+      sandbox: true,                         // ✅ ADDED: Enable sandbox
+      preload: path.join(__dirname, 'preload.js')  // ✅ ADDED: Safe IPC bridge
     }
   });
 
-  // 开发环境加载本地React应用
-  const startUrl = isDev
-    ? 'http://localhost:3000'
-    : `file://${path.join(__dirname, '../build/index.html')}`;
-
+  // 始终加载新的 React 前端（端口 3000）
+  const startUrl = 'http://localhost:3000';
   console.log('Loading URL:', startUrl);
   mainWindow.loadURL(startUrl);
 
-  // 调试工具
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
-  }
+  // 开发调试工具（按 F12 手动开启即可）
+  // mainWindow.webContents.openDevTools();
 
   mainWindow.on('closed', () => {
     mainWindow = null;
