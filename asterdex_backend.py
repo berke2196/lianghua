@@ -159,7 +159,6 @@ class TradingState:
         # 行情
         self.market_prices: Dict[str, float] = {}
         self.orderbooks: Dict[str, Dict] = {}
-        self.recent_trades_data: Dict[str, List] = {}
 
         # 任务
         self.auto_trading: bool = False
@@ -173,7 +172,7 @@ class TradingState:
             "symbol": "BTCUSDT",
             "leverage": 2,
             "trade_size_usd": 10,
-            "min_confidence": 0.62,
+            "min_confidence": 0.70,
             "stop_loss_pct": 0.012,
             "take_profit_pct": 0.028,
             "enable_long": True,
@@ -189,10 +188,6 @@ class TradingState:
             "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
             # RSI
             "rsi_period": 14, "rsi_oversold": 30, "rsi_overbought": 70,
-            # BB
-            "bb_period": 20, "bb_std": 2.0,
-            # Breakout
-            "breakout_period": 20, "breakout_vol_mult": 1.5,
         }
 
         # 绩效
@@ -500,10 +495,7 @@ async def market_ws_loop():
                             # 也存完整 symbol 供下单用
                             state.market_prices[data["s"]] = px
                             await broadcast("prices", {k: v for k, v in state.market_prices.items() if not k.endswith("USDT")})
-                            # 存最近成交
-                            buf = state.recent_trades_data.setdefault(sym, [])
-                            buf.insert(0, {"p": px, "sz": float(data.get("q", 0))})
-                            state.recent_trades_data[sym] = buf[:50]
+
 
                         elif etype == "depthUpdate":
                             sym = data["s"].replace("USDT", "")
@@ -588,8 +580,30 @@ async def place_order(symbol: str, side: str, order_type: str,
         params["price"] = round(price, 2)
         params["timeInForce"] = "GTC"
 
+    # 诊断信息
+    if not get_global_key():
+        logger.error(f"❌ 下单前检查: 未登录，无法下单 {symbol}")
+        return None
+    if quantity <= 0:
+        logger.error(f"❌ 下单前检查: 手数无效 {symbol} qty={qty_str}")
+        return None
+    if state.available < 1.0:
+        logger.error(f"❌ 下单前检查: 余额不足 {symbol} available=${state.available:.2f}")
+        return None
+
+    logger.info(f"📍 下单请求 {side} {symbol} qty={qty_str} px={price} auth={'✅' if get_global_key() else '❌'}")
     result = await aster_post("/fapi/v3/order", params)
-    logger.info(f"下单 {side} {symbol} qty={qty_str} px={price} -> {result}")
+
+    if result is None:
+        logger.error(f"❌ 下单失败 {side} {symbol}: 无API响应")
+    elif isinstance(result, dict):
+        if result.get("code") and result["code"] < 0:
+            logger.error(f"❌ 下单被拒 {side} {symbol}: {result.get('msg', 'unknown')}")
+        elif result.get("orderId"):
+            logger.info(f"✅ 下单成功 {side} {symbol} orderId={result.get('orderId')}")
+        else:
+            logger.warning(f"⚠️ 下单响应异常 {side} {symbol}: {result}")
+
     return result
 
 async def cancel_order(symbol: str, order_id: int) -> Optional[dict]:
@@ -1145,10 +1159,9 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None):
             "text": f"🔔 {exit_reason} {symbol} @ {price:.4f} ⏳冷却{cooldown}s"})
         return
 
-    # ── 信号生成（generate内部已调用compute，避免重复计算）──
-    side, confidence, block_reason = signal_engine.generate(sym_cfg, sym_short, symbol=symbol)
-    # generate()不暴露raw scores，需单独取用于广播
+    # ── 信号生成（先compute取scores，再由generate过滤）──
     raw_side, raw_conf, scores = signal_engine.compute(kline_cache.get(symbol, []), sym_short)
+    side, confidence, block_reason = signal_engine.generate(sym_cfg, sym_short, symbol=symbol)
 
     existing = next((p for p in state.positions if p["symbol"] == symbol), None)
     # pos_tracker 本地记录比交易所API同步快，优先用它防止重复开仓
@@ -1163,7 +1176,7 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None):
             pos_side = pos_side_src if pos_side_src in ("BUY","SELL") else ("BUY" if pos_side_src=="LONG" else "SELL")
             is_reverse = (pos_side == "BUY" and side == "SELL") or \
                          (pos_side == "SELL" and side == "BUY")
-            if is_reverse and confidence >= sym_cfg.get("min_confidence", s.get("min_confidence", 0.62)):
+            if is_reverse and confidence >= sym_cfg.get("min_confidence", s.get("min_confidence", 0.70)):
                 logger.info(f"↩️ {symbol} 反向平仓 {pos_side}→{side} conf={confidence:.3f}")
                 await cancel_all_orders(symbol)
                 result = await close_position(symbol)
@@ -1668,7 +1681,7 @@ def _compute_indicators(symbol: str) -> dict:
     sym_cfg   = state.settings.get("symbol_settings", {}).get(symbol, s)
     sym_short = symbol.replace("USDT", "")
     klines    = kline_cache.get(symbol, [])
-    min_conf  = sym_cfg.get("min_confidence", s.get("min_confidence", 0.62))
+    min_conf  = sym_cfg.get("min_confidence", s.get("min_confidence", 0.70))
     n = len(klines)
 
     if n < 30:
@@ -1786,6 +1799,93 @@ async def api_apply_opt():
         "text": f"🔁 已自动应用最优参数：conf={best['min_confidence']} sl={best['stop_loss_pct']*100:.1f}% tp={best['take_profit_pct']*100:.1f}%"})
     return {"ok": True, "applied": best}
 
+@app.get("/api/strategy/recommendations")
+async def api_strategy_recommendations():
+    """根据当前交易数据提供策略优化建议"""
+    closed = [t for t in state.trade_logs if t.get("side") == "CLOSE" and t.get("pnl") is not None]
+
+    if len(closed) < 10:
+        return {
+            "ok": True,
+            "recommendations": [],
+            "reason": f"数据不足，需要至少10笔平仓交易，当前{len(closed)}笔"
+        }
+
+    recommendations = []
+
+    # 分析胜率
+    win_rate = state.perf.get("win_rate", 0)
+    if win_rate < 45:
+        recommendations.append({
+            "level": "critical",
+            "issue": "胜率过低",
+            "current": f"{win_rate}%",
+            "suggestion": "降低min_confidence阈值（如从0.70→0.65），或增加止盈目标",
+            "impact": "可能提高交易频率，但需谨慎风险"
+        })
+    elif win_rate > 60:
+        recommendations.append({
+            "level": "opportunity",
+            "issue": "胜率高，可以积极",
+            "current": f"{win_rate}%",
+            "suggestion": "提高杠杆或增加单笔下单金额来放大收益",
+            "impact": "增加收益，但同时增加风险"
+        })
+
+    # 分析平均持仓时间
+    avg_hold_secs = sum(t.get("hold_secs", 0) for t in closed) / len(closed) if closed else 0
+    if avg_hold_secs < 60:
+        recommendations.append({
+            "level": "info",
+            "issue": "非常短线策略",
+            "current": f"平均{avg_hold_secs:.0f}秒",
+            "suggestion": "这是HFT特征，确保交易所手续费支持，考虑降低最小下单金额",
+            "impact": "高频率交易，需关注手续费成本"
+        })
+
+    # 分析平均单笔盈亏
+    total_pnl = sum(t.get("pnl", 0) for t in closed)
+    avg_pnl = total_pnl / len(closed) if closed else 0
+    if avg_pnl < 0.5 and avg_pnl > 0:
+        recommendations.append({
+            "level": "warning",
+            "issue": "平均单笔盈利过小",
+            "current": f"${avg_pnl:.2f}/笔",
+            "suggestion": "增加take_profit_pct目标，或降低信号过滤阈值",
+            "impact": "追求更大的每笔收益"
+        })
+
+    # 分析最大回撤
+    pnl_series = [t.get("pnl", 0) for t in closed]
+    if pnl_series:
+        cumsum = []
+        cum = 0
+        for p in pnl_series:
+            cum += p
+            cumsum.append(cum)
+        max_drawdown = min(0, min(cumsum) - max(0, min(cumsum)))  # 计算最大回撤
+        if max_drawdown < -100:
+            recommendations.append({
+                "level": "critical",
+                "issue": "最大回撤过大",
+                "current": f"${max_drawdown:.2f}",
+                "suggestion": "增加stop_loss_pct，或降低max_open_positions",
+                "impact": "提高风险控制，可能牺牲一些盈利"
+            })
+
+    return {
+        "ok": True,
+        "closed_trades": len(closed),
+        "recommendations": recommendations,
+        "current_settings": {
+            "min_confidence": state.settings.get("min_confidence", 0.70),
+            "stop_loss_pct": state.settings.get("stop_loss_pct", 0.012),
+            "take_profit_pct": state.settings.get("take_profit_pct", 0.028),
+            "leverage": state.settings.get("leverage", 2),
+            "hft_mode": state.settings.get("hft_mode", "balanced"),
+        }
+    }
+
 @app.post("/api/trading/cancel_orders")
 async def api_cancel_orders(body: dict):
     symbol = body.get("symbol", state.settings.get("symbol","BTCUSDT"))
@@ -1796,6 +1896,39 @@ async def api_cancel_orders(body: dict):
 async def get_orderbook(symbol: str = "BTCUSDT"):
     sym = symbol.replace("USDT","")
     return {"ok": True, "symbol": symbol, **state.orderbooks.get(sym, {"bids":[],"asks":[]})}
+
+@app.get("/api/diagnostics")
+async def api_diagnostics():
+    """系统诊断接口 - 检查所有关键组件"""
+    return {
+        "ok": True,
+        "timestamp": datetime.now().isoformat(),
+        "backend": {
+            "logged_in": state.logged_in,
+            "user": state.user[:8] + "..." if state.user else "❌ Not logged in",
+            "signer": state.signer[:8] + "..." if state.signer else "❌",
+            "auth_ready": "✅" if get_global_key() else "❌",
+        },
+        "account": {
+            "balance": state.balance,
+            "available": state.available,
+            "positions": len(state.positions),
+            "open_orders": len(state.open_orders),
+        },
+        "trading": {
+            "auto_trading": state.auto_trading,
+            "active_symbols": state.settings.get("active_symbols", ["BTCUSDT"]),
+            "leverage": state.settings.get("leverage", 2),
+            "trade_size_usd": state.settings.get("trade_size_usd", 10),
+        },
+        "market": {
+            "prices_count": len(state.market_prices),
+            "orderbooks_count": len(state.orderbooks),
+            "klines_symbols": list(kline_cache.keys()),
+        },
+        "performance": state.perf,
+        "recent_logs": state.trade_logs[:5],
+    }
 
 # ─────────────────────────────────────────────
 # WebSocket 前端推送

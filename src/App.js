@@ -71,12 +71,6 @@ function App() {
     macd_fast: 12, macd_slow: 26, macd_signal: 9,
     // RSI
     rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
-    // BB
-    bb_period: 20, bb_std: 2.0,
-    // Breakout
-    breakout_period: 20, breakout_vol_mult: 1.5,
-    // MM
-    mm_spread_pct: 0.001, mm_order_size_usd: 5,
     // Risk
     max_open_positions: 3, max_daily_loss_usd: 50, max_position_usd: 500,
     cancel_on_reverse: true, hft_interval_ms: 500,

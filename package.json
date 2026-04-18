@@ -1,7 +1,7 @@
 {
-  "name": "hyperliquid-ai-trader",
-  "version": "2.0.0",
-  "description": "Hyperliquid AI Trading System - Electron Desktop App",
+  "name": "asterdex-hft-trader",
+  "version": "5.0.0",
+  "description": "AsterDex HFT Auto Trader - Electron Desktop App",
   "main": "electron-main.js",
   "homepage": "./",
   "scripts": {
@@ -16,29 +16,17 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
-    "axios": "^1.6.2",
-    "chart.js": "^4.4.0",
-    "react-chartjs-2": "^5.2.0",
     "antd": "^5.11.0",
     "@ant-design/icons": "^5.2.0",
-    "dayjs": "^1.11.10",
-    "zustand": "^4.4.0",
-    "i18next": "^23.7.0",
-    "react-i18next": "^13.5.0",
-    "socket.io-client": "^4.7.0"
+    "recharts": "^2.10.3",
+    "dayjs": "^1.11.10"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@types/node": "^20.10.0",
-    "typescript": "^4.9.5",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.0",
     "electron-is-dev": "^2.0.0",
     "eslint": "^8.55.0",
-    "prettier": "^3.1.0",
     "concurrently": "^8.2.0",
-    "cross-env": "^7.0.3",
     "wait-on": "^7.0.1"
   },
   "browserslist": {
