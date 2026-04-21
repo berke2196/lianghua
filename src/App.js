@@ -101,6 +101,30 @@ function App() {
     cooldown_secs: 60,
     hft_mode: 'balanced',  // balanced模式RR≥1.2，收支平衡起点
     active_symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+    // 开仓方向
+    trade_direction: 'both',  // long / short / both
+    // 循环策略
+    loop_mode: 'loop',        // once / loop
+    loop_count: 5000,
+    // 补仓设置
+    enable_add_position: true,
+    add_position_count: 3,
+    add_position_macd: 'off',   // off / 5m / 15m
+    add_position_ema: '5m',     // off / 5m / 15m / 30m
+    anti_waterfall: true,
+    anti_waterfall_pct: 2.0,
+    enable_double_add: false,
+    // 止盈设置
+    take_profit_mode: 'all',    // all / tail / custom
+    take_profit_type: 'trailing', // static / trailing
+    trailing_callback_pct: 1.0,
+    enable_reverse_tp: false,
+    reverse_tp_tf: 'off',       // off / 5m / 15m
+    // 止损设置
+    stop_loss_type: 'pct',      // pct / usd
+    stop_loss_pct_val: 40,      // 止损比例%
+    stop_loss_usd_val: 50,      // 止损金额
+    enable_reverse_sl: false,
   });
   const [indicators, setIndicators] = useState(null);
   const [multiIndicators, setMultiIndicators] = useState({}); // {BTCUSDT: {...}, ETHUSDT: {...}}
@@ -2369,6 +2393,180 @@ function App() {
               {/* ══ 风控 Tab ══ */}
               {settingsTab === 'risk' && (
               <div className="settings-form">
+
+                {/* 开仓方向 */}
+                <div className="form-group" style={{marginBottom:14}}>
+                  <label style={{marginBottom:6,display:'block'}}>📊 策略方向</label>
+                  <div style={{display:'flex',gap:6}}>
+                    {[['long','📈 只做多'],['short','📉 只做空'],['both','⇅ 双向']].map(([v,l])=>{
+                      const act=settings.trade_direction===v;
+                      return <button key={v} onClick={()=>setSettings(p=>({...p,trade_direction:v}))}
+                        style={{flex:1,padding:'7px 4px',borderRadius:6,cursor:'pointer',fontWeight:700,fontSize:11,
+                          background:act?'rgba(0,245,255,0.1)':'transparent',
+                          border:`2px solid ${act?'var(--cyan)':'rgba(0,245,255,0.12)'}`,
+                          color:act?'var(--cyan)':'var(--text-mid)',transition:'all .2s'}}>{l}</button>;
+                    })}
+                  </div>
+                </div>
+
+                {/* 循环类型 */}
+                <div className="form-group" style={{marginBottom:14}}>
+                  <label style={{marginBottom:6,display:'block'}}>🔄 循环类型</label>
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    {[['once','单次策略'],['loop','循环策略']].map(([v,l])=>{
+                      const act=settings.loop_mode===v;
+                      return <button key={v} onClick={()=>setSettings(p=>({...p,loop_mode:v}))}
+                        style={{flex:1,padding:'7px',borderRadius:6,cursor:'pointer',fontWeight:700,fontSize:11,
+                          background:act?'rgba(255,180,0,0.1)':'transparent',
+                          border:`2px solid ${act?'var(--yellow)':'rgba(0,245,255,0.12)'}`,
+                          color:act?'var(--yellow)':'var(--text-mid)',transition:'all .2s'}}>{l}</button>;
+                    })}
+                    {settings.loop_mode==='loop' && (
+                      <div style={{display:'flex',alignItems:'center',gap:4,flex:1}}>
+                        <input type="number" min="1" max="99999" value={settings.loop_count}
+                          onChange={e=>setSettings(p=>({...p,loop_count:+e.target.value}))}
+                          style={{width:'80px'}} />
+                        <span style={{fontSize:11,color:'var(--text-dim)'}}>次</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 补仓设置 */}
+                <div style={{background:'rgba(0,245,255,0.03)',border:'1px solid rgba(0,245,255,0.1)',borderRadius:8,padding:'12px',marginBottom:14}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                    <span style={{fontWeight:700,fontSize:12,color:'var(--cyan)'}}>📥 补仓设置</span>
+                    <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                      <span style={{fontSize:11,color:'var(--text-mid)'}}>开启补仓</span>
+                      <input type="checkbox" checked={settings.enable_add_position}
+                        onChange={e=>setSettings(p=>({...p,enable_add_position:e.target.checked}))} />
+                    </label>
+                  </div>
+                  {settings.enable_add_position && (<>
+                    <div className="form-row-2" style={{marginBottom:8}}>
+                      <div className="form-group">
+                        <label>补仓次数</label>
+                        <input type="number" min="1" max="20" value={settings.add_position_count}
+                          onChange={e=>setSettings(p=>({...p,add_position_count:+e.target.value}))} />
+                      </div>
+                      <div className="form-group">
+                        <label style={{display:'flex',alignItems:'center',gap:4}}>
+                          <input type="checkbox" checked={settings.enable_double_add}
+                            onChange={e=>setSettings(p=>({...p,enable_double_add:e.target.checked}))} />
+                          开仓加倍
+                        </label>
+                        <select value={settings.add_position_ema} onChange={e=>setSettings(p=>({...p,add_position_ema:e.target.value}))}>
+                          <option value="off">补仓EMA: 关闭</option>
+                          <option value="5m">补仓EMA: 5分钟</option>
+                          <option value="15m">补仓EMA: 15分钟</option>
+                          <option value="30m">补仓EMA: 30分钟</option>
+                        </select>
+                      </div>
+                      <div className="form-group">
+                        <label>补仓MACD监测</label>
+                        <select value={settings.add_position_macd} onChange={e=>setSettings(p=>({...p,add_position_macd:e.target.value}))}>
+                          <option value="off">关闭</option>
+                          <option value="5m">5分钟</option>
+                          <option value="15m">15分钟</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                      <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
+                        <input type="checkbox" checked={settings.anti_waterfall}
+                          onChange={e=>setSettings(p=>({...p,anti_waterfall:e.target.checked}))} />
+                        🛡️ 防瀑布
+                      </label>
+                      {settings.anti_waterfall && (
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                          <input type="number" step="0.1" min="0.5" max="10" value={settings.anti_waterfall_pct}
+                            onChange={e=>setSettings(p=>({...p,anti_waterfall_pct:+e.target.value}))}
+                            style={{width:'60px'}} />
+                          <span style={{fontSize:11,color:'var(--text-dim)'}}>%</span>
+                        </div>
+                      )}
+                    </div>
+                  </>)}
+                </div>
+
+                {/* 止盈设置 */}
+                <div style={{background:'rgba(0,245,100,0.03)',border:'1px solid rgba(0,245,100,0.1)',borderRadius:8,padding:'12px',marginBottom:14}}>
+                  <div style={{fontWeight:700,fontSize:12,color:'var(--green)',marginBottom:10}}>💰 止盈设置</div>
+                  <div className="form-row-2" style={{marginBottom:8}}>
+                    <div className="form-group">
+                      <label>止盈方式</label>
+                      <select value={settings.take_profit_mode} onChange={e=>setSettings(p=>({...p,take_profit_mode:e.target.value}))}>
+                        <option value="all">全仓止盈</option>
+                        <option value="tail">尾单止盈</option>
+                        <option value="custom">自定义</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>止盈类型</label>
+                      <select value={settings.take_profit_type} onChange={e=>setSettings(p=>({...p,take_profit_type:e.target.value}))}>
+                        <option value="static">静态止盈</option>
+                        <option value="trailing">移动止盈</option>
+                      </select>
+                    </div>
+                    {settings.take_profit_type==='trailing' && (
+                      <div className="form-group">
+                        <label>回调比例(%)</label>
+                        <input type="number" step="0.1" min="0.1" max="10" value={settings.trailing_callback_pct}
+                          onChange={e=>setSettings(p=>({...p,trailing_callback_pct:+e.target.value}))} />
+                      </div>
+                    )}
+                    <div className="form-group">
+                      <label>止盈比例(%)</label>
+                      <input type="number" step="0.1" min="0.1" value={(settings.take_profit_pct*100).toFixed(1)}
+                        onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} />
+                    </div>
+                  </div>
+                  <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
+                    <input type="checkbox" checked={settings.enable_reverse_tp}
+                      onChange={e=>setSettings(p=>({...p,enable_reverse_tp:e.target.checked}))} />
+                    反向止盈监测
+                    {settings.enable_reverse_tp && (
+                      <select value={settings.reverse_tp_tf} onChange={e=>setSettings(p=>({...p,reverse_tp_tf:e.target.value}))}
+                        style={{marginLeft:6,padding:'2px 6px',fontSize:11}}>
+                        <option value="5m">5分钟</option>
+                        <option value="15m">15分钟</option>
+                      </select>
+                    )}
+                  </label>
+                </div>
+
+                {/* 止损设置 */}
+                <div style={{background:'rgba(255,45,120,0.03)',border:'1px solid rgba(255,45,120,0.1)',borderRadius:8,padding:'12px',marginBottom:14}}>
+                  <div style={{fontWeight:700,fontSize:12,color:'var(--pink)',marginBottom:10}}>🛑 止损设置</div>
+                  <div className="form-row-2" style={{marginBottom:8}}>
+                    <div className="form-group">
+                      <label>止损类型</label>
+                      <select value={settings.stop_loss_type} onChange={e=>setSettings(p=>({...p,stop_loss_type:e.target.value}))}>
+                        <option value="pct">比例止损</option>
+                        <option value="usd">金额止损</option>
+                      </select>
+                    </div>
+                    {settings.stop_loss_type==='pct' ? (
+                      <div className="form-group">
+                        <label>止损比例(%)</label>
+                        <input type="number" step="1" min="1" max="100" value={settings.stop_loss_pct_val}
+                          onChange={e=>setSettings(p=>({...p,stop_loss_pct_val:+e.target.value}))} />
+                      </div>
+                    ) : (
+                      <div className="form-group">
+                        <label>止损金额(USD)</label>
+                        <input type="number" step="1" min="1" value={settings.stop_loss_usd_val}
+                          onChange={e=>setSettings(p=>({...p,stop_loss_usd_val:+e.target.value}))} />
+                      </div>
+                    )}
+                  </div>
+                  <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
+                    <input type="checkbox" checked={settings.enable_reverse_sl}
+                      onChange={e=>setSettings(p=>({...p,enable_reverse_sl:e.target.checked}))} />
+                    反向止损
+                  </label>
+                </div>
+
                 <div className="form-row checkboxes">
                   <label className="checkbox-label">
                     <input type="checkbox" checked={settings.enable_long} onChange={e=>setSettings(p=>({...p,enable_long:e.target.checked}))} />
