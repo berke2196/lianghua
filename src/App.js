@@ -99,6 +99,7 @@ function App() {
     max_open_positions: 3, max_daily_loss_usd: 50, max_position_usd: 500, max_trade_usd: 30,
     cancel_on_reverse: true, hft_interval_ms: 500,
     cooldown_secs: 60,
+    spike_protection_pct: 0.8,
     hft_mode: 'balanced',  // balanced模式RR≥1.2，收支平衡起点
     active_symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
     // 开仓方向
@@ -2569,14 +2570,6 @@ function App() {
 
                 <div className="form-row checkboxes">
                   <label className="checkbox-label">
-                    <input type="checkbox" checked={settings.enable_long} onChange={e=>setSettings(p=>({...p,enable_long:e.target.checked}))} />
-                    <span>📈 允许做多</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={settings.enable_short} onChange={e=>setSettings(p=>({...p,enable_short:e.target.checked}))} />
-                    <span>📉 允许做空</span>
-                  </label>
-                  <label className="checkbox-label">
                     <input type="checkbox" checked={settings.cancel_on_reverse} onChange={e=>setSettings(p=>({...p,cancel_on_reverse:e.target.checked}))} />
                     <span>↩️ 反向自动撤单</span>
                   </label>
@@ -3042,7 +3035,24 @@ function App() {
                             </td>
                             <td style={{padding:'8px 12px',color:'rgba(255,255,255,0.4)',fontSize:11}}>{(u.created_at||'').slice(0,16)}</td>
                             <td style={{padding:'8px 12px'}}>
-                              <button onClick={()=>{setChangePwdTarget(u.username);setChangePwdVal('');setChangePwdMsg('');}} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,255,0.08)',border:'1px solid rgba(0,245,255,0.3)',color:'var(--cyan)',cursor:'pointer'}}>改密码</button>
+                              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                                <button onClick={()=>{setChangePwdTarget(u.username);setChangePwdVal('');setChangePwdMsg('');}} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,255,0.08)',border:'1px solid rgba(0,245,255,0.3)',color:'var(--cyan)',cursor:'pointer'}}>改密码</button>
+                                <button onClick={async()=>{
+                                  const days=prompt(`给 ${u.username} 续期多少天？`,30);
+                                  if(!days||isNaN(+days)) return;
+                                  const r=await authFetch('/api/admin/extend-license',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username,days:+days})});
+                                  const d=await r.json();
+                                  if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
+                                  else showToast(`❌ ${d.msg}`,'error');
+                                }} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,100,0.08)',border:'1px solid rgba(0,245,100,0.3)',color:'var(--green)',cursor:'pointer'}}>续期</button>
+                                <button onClick={async()=>{
+                                  if(!window.confirm(`确认${u.is_active?'封禁':'解封'} ${u.username}？`)) return;
+                                  const r=await authFetch('/api/admin/toggle-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username})});
+                                  const d=await r.json();
+                                  if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
+                                  else showToast(`❌ ${d.msg}`,'error');
+                                }} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:u.is_active?'rgba(255,45,120,0.08)':'rgba(0,245,100,0.08)',border:`1px solid ${u.is_active?'rgba(255,45,120,0.3)':'rgba(0,245,100,0.3)'}`,color:u.is_active?'var(--pink)':'var(--green)',cursor:'pointer'}}>{u.is_active?'封禁':'解封'}</button>
+                              </div>
                             </td>
                           </tr>
                         ))}
