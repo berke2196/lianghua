@@ -33,6 +33,10 @@ services:
         value: "https://xb1.me,http://xb1.me,https://www.xb1.me,https://berke2196.github.io"
       - key: FORCE_HTTPS
         value: "0"
+      - key: API_PREFIX
+        value: "api-asterdex"
+      - key: REACT_APP_API_PREFIX
+        value: "api-asterdex"
 
 static_sites:
   - name: frontend
