@@ -9,8 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY asterdex_backend.py security.py config.py alerting.py db.py auth.py run.py ./
 
-RUN mkdir -p data
+RUN mkdir -p data logs
 
-EXPOSE 8000
+EXPOSE 8080
+
+ENV BACKEND_HOST=0.0.0.0
+ENV BACKEND_PORT=8080
 
 CMD ["python", "run.py"]

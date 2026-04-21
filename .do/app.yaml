@@ -1,0 +1,50 @@
+name: asterdex-hft
+region: sgp
+
+services:
+  - name: backend
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: berke2196/lianghua
+      branch: main
+      deploy_on_push: true
+    http_port: 8080
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 10
+      period_seconds: 30
+    envs:
+      - key: PORT
+        value: "8080"
+      - key: BACKEND_HOST
+        value: "0.0.0.0"
+      - key: BACKEND_PORT
+        value: "8080"
+      - key: SECRET_KEY
+        value: "change-me-to-random-secret-32chars"
+        type: SECRET
+      - key: ADMIN_PASSWORD
+        value: "admin123"
+        type: SECRET
+      - key: CORS_ORIGINS
+        value: "https://xb1.me,http://xb1.me,https://www.xb1.me,https://berke2196.github.io"
+      - key: FORCE_HTTPS
+        value: "0"
+
+static_sites:
+  - name: frontend
+    dockerfile_path: Dockerfile.frontend
+    source_dir: /
+    github:
+      repo: berke2196/lianghua
+      branch: main
+      deploy_on_push: true
+    envs:
+      - key: REACT_APP_API_URL
+        scope: BUILD_TIME
+        value: "${backend.PUBLIC_URL}"
+    routes:
+      - path: /
