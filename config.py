@@ -26,7 +26,9 @@ class Config:
     # Security Configuration
     CORS_ORIGINS = os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:8000"
+        "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:8000,"
+        "https://xb1.me,http://xb1.me,https://www.xb1.me,http://www.xb1.me,"
+        "https://berke2196.github.io"
     ).split(",")
     CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
     CORS_HEADERS = ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin", "Cache-Control"]

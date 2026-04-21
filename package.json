@@ -3,7 +3,7 @@
   "version": "5.0.0",
   "description": "AsterDex HFT Auto Trader - Electron Desktop App",
   "main": "electron-main.js",
-  "homepage": "https://berke2196.github.io/lianghua",
+  "homepage": "https://xb1.me",
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
