@@ -733,7 +733,7 @@ function App() {
       {/* 顶部栏 */}
       <div className="header">
         <div className="header-left">
-          <h2>◈ ASTERDEX HFT</h2>
+          <h2>◈ 极客V99量化交易</h2>
           <div className="header-divider" />
           <div className="header-status">
             <span className={`dot ${backendOk ? 'green' : 'red'}`} />
@@ -887,7 +887,7 @@ function App() {
               <div className="login-card">
                 <div style={{textAlign:'center',marginBottom:24}}>
                   <div style={{fontSize:48,marginBottom:8,filter:'drop-shadow(0 0 16px rgba(0,245,255,0.6))'}}>◈</div>
-                  <h2 style={{background:'linear-gradient(135deg,var(--cyan),var(--purple))',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:22,fontWeight:900,letterSpacing:3}}>ASTERDEX HFT</h2>
+                  <h2 style={{background:'linear-gradient(135deg,var(--cyan),var(--purple))',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:22,fontWeight:900,letterSpacing:3}}>极客V99量化交易</h2>
                   <p style={{color:'var(--text-mid)',fontSize:13,marginTop:6}}>云端全自动量化交易中心</p>
                 </div>
 
@@ -989,7 +989,7 @@ function App() {
               <div className="login-card">
                 <div style={{textAlign:'center',marginBottom:20}}>
                   <div style={{fontSize:48,marginBottom:8,filter:'drop-shadow(0 0 16px rgba(0,245,255,0.6))'}}>◈</div>
-                  <h2 style={{background:'linear-gradient(135deg,var(--cyan),var(--purple))',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:22,fontWeight:900,letterSpacing:3}}>ASTERDEX HFT</h2>
+                  <h2 style={{background:'linear-gradient(135deg,var(--cyan),var(--purple))',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:22,fontWeight:900,letterSpacing:3}}>极客V99量化交易</h2>
                   <p style={{color:'var(--text-mid)',fontSize:13,marginTop:6,letterSpacing:'0.5px'}}>连接 AsterDex 全自动高频交易</p>
                 </div>
 
