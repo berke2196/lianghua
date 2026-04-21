@@ -80,3 +80,6 @@ temp/
 
 # Build artifacts
 dist_electron/
+
+# Trade history backups (含账户信息，不入库)
+trade_history_bak_*.json

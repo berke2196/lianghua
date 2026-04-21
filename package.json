@@ -3,30 +3,76 @@
   "version": "5.0.0",
   "description": "AsterDex HFT Auto Trader - Electron Desktop App",
   "main": "electron-main.js",
-  "homepage": "./",
+  "homepage": "https://berke2196.github.io/lianghua",
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build",
     "electron": "electron .",
     "electron-wait": "wait-on http://localhost:3000 && electron .",
     "dev": "concurrently \"npm start\" \"npm run electron-wait\"",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "pack": "npm run build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.asterdex.hft",
+    "productName": "AsterDex HFT",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "electron-main.js",
+      "preload.js",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-dist/",
+        "to": "backend/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/favicon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052"
+    }
   },
   "dependencies": {
+    "@ant-design/icons": "^5.2.0",
+    "antd": "^5.11.0",
+    "dayjs": "^1.11.20",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
-    "antd": "^5.11.0",
-    "@ant-design/icons": "^5.2.0",
-    "recharts": "^2.10.3",
-    "dayjs": "^1.11.10"
+    "recharts": "^2.15.4"
   },
   "devDependencies": {
+    "concurrently": "^8.2.0",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.0",
     "electron-is-dev": "^2.0.0",
     "eslint": "^8.55.0",
-    "concurrently": "^8.2.0",
+    "gh-pages": "^6.3.0",
     "wait-on": "^7.0.1"
   },
   "browserslist": {

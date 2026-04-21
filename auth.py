@@ -1,0 +1,94 @@
+"""
+auth.py — JWT Token 生成与验证
+安全特性：短期 token(8h)、jti 防重放、token 黑名单(登出)
+"""
+import os, time, secrets
+from typing import Set
+import jwt
+from fastapi import HTTPException, Security, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from dotenv import load_dotenv
+load_dotenv()
+
+SECRET   = os.environ.get("JWT_SECRET", "")
+ALG      = "HS256"
+EXPIRE_H = int(os.environ.get("JWT_EXPIRE_HOURS", "8"))  # 默认 8 小时
+
+if not SECRET or SECRET == "CHANGE_ME_IN_PRODUCTION_USE_RANDOM_32_CHARS":
+    import secrets as _s
+    from pathlib import Path as _Path
+    SECRET = _s.token_hex(32)
+    # 自动写入 .env，重启后不再随机（token 不会失效）
+    _env_file = _Path(__file__).parent / ".env"
+    try:
+        _lines = _env_file.read_text(encoding="utf-8").splitlines() if _env_file.exists() else []
+        if not any(l.startswith("JWT_SECRET=") for l in _lines):
+            _lines.append(f"JWT_SECRET={SECRET}")
+            _env_file.write_text("\n".join(_lines) + "\n", encoding="utf-8")
+            print(f"[AUTH] ✅ JWT_SECRET 已自动生成并写入 .env（长期有效）")
+        else:
+            print("[AUTH] ⚠️  JWT_SECRET 已在 .env 中但未加载，请检查 load_dotenv() 调用顺序")
+    except Exception as _e:
+        print(f"[AUTH] ⚠️  JWT_SECRET 未设置且无法写入 .env: {_e}，重启后 token 将失效")
+
+# ── Token 黑名单（登出后立即失效）──
+# 生产环境应用 Redis；这里用内存集合（重启自动清空，可接受）
+_revoked_jtis: Set[str] = set()
+
+bearer = HTTPBearer(auto_error=False)
+
+def create_token(user_id: int, username: str, is_admin: bool = False) -> str:
+    jti = secrets.token_hex(16)
+    payload = {
+        "sub":      str(user_id),
+        "username": username,
+        "admin":    is_admin,
+        "jti":      jti,
+        "exp":      int(time.time()) + EXPIRE_H * 3600,
+        "iat":      int(time.time()),
+    }
+    return jwt.encode(payload, SECRET, algorithm=ALG)
+
+def revoke_token(token: str):
+    """登出时将 jti 加入黑名单"""
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[ALG])
+        jti = payload.get("jti")
+        if jti:
+            _revoked_jtis.add(jti)
+            # 防止无限增长：超过 10000 条时清掉最老的一半
+            if len(_revoked_jtis) > 10000:
+                to_remove = list(_revoked_jtis)[:5000]
+                for t in to_remove:
+                    _revoked_jtis.discard(t)
+    except Exception:
+        pass
+
+def decode_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[ALG])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token 已过期，请重新登录")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token 无效")
+    if payload.get("jti") in _revoked_jtis:
+        raise HTTPException(status_code=401, detail="Token 已失效，请重新登录")
+    return payload
+
+def get_current_user(creds: HTTPAuthorizationCredentials = Security(bearer)) -> dict:
+    if not creds:
+        raise HTTPException(status_code=401, detail="未登录，请先认证")
+    return decode_token(creds.credentials)
+
+def get_admin_user(creds: HTTPAuthorizationCredentials = Security(bearer)) -> dict:
+    payload = get_current_user(creds)
+    if not payload.get("admin"):
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return payload
+
+def get_client_ip(request: Request) -> str:
+    """获取真实客户端 IP（兼容反向代理）"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"

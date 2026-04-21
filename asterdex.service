@@ -1,0 +1,17 @@
+[Unit]
+Description=AsterDex HFT Trader Backend
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/asterdex
+EnvironmentFile=/opt/asterdex/.env
+ExecStart=/usr/bin/python3 /opt/asterdex/asterdex_backend.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/asterdex/out.log
+StandardError=append:/var/log/asterdex/error.log
+
+[Install]
+WantedBy=multi-user.target

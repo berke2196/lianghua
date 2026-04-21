@@ -113,8 +113,30 @@ class SecureKeyStore:
         self._clear()
 
 
-# Global key store instance
-_global_key_store = SecureKeyStore(expiration_seconds=3600)  # 1 hour
+# Global key store（单用户向下兼容）
+_global_key_store = SecureKeyStore(expiration_seconds=365 * 24 * 3600)
+
+# ── 多用户私钥隔离：user_id -> SecureKeyStore ──
+_user_key_stores: dict = {}
+
+def get_user_key_store(user_id: int) -> "SecureKeyStore":
+    if user_id not in _user_key_stores:
+        _user_key_stores[user_id] = SecureKeyStore(expiration_seconds=365 * 24 * 3600)
+    return _user_key_stores[user_id]
+
+def set_user_key(user_id: int, key: str) -> None:
+    get_user_key_store(user_id).set_key(key)
+    logger.info(f"✅ User {user_id} private key stored securely")
+
+def get_user_key(user_id: int) -> Optional[str]:
+    store = _user_key_stores.get(user_id)
+    return store.get_key() if store else None
+
+def clear_user_key(user_id: int) -> None:
+    store = _user_key_stores.pop(user_id, None)
+    if store:
+        store._clear()
+    logger.info(f"✅ User {user_id} private key cleared")
 
 
 @contextmanager
