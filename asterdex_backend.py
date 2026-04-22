@@ -3568,6 +3568,10 @@ async def api_close_position(body: dict, user=Depends(get_current_user)):
                     tracker_sz = _pos_info2.get("size", 0)
             _log_trade(symbol, "CLOSE", price, tracker_sz, "手动平仓", 1.0, result, open_ctx=_te2.get("open_ctx"), uid=uid)
             _pt_man.clear(symbol)
+            # 手动平仓后写冷却，防止自动交易立即在同一symbol重新开仓
+            _cd_man = _get_close_cooldown(uid)
+            _cd_man[symbol] = time.time()
+            _cd_man[f"{symbol}_reverse_cd"] = time.time()
         return {"ok": bool(result), "result": result}
     finally:
         _gc_man.discard(symbol)
