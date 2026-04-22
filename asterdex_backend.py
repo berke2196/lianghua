@@ -1341,35 +1341,82 @@ class CryptoHFTEngine:
         return out
 
     def _rsi(self, closes, n=14):
-        if len(closes) < n + 1: return 50.0
-        d = [closes[i] - closes[i-1] for i in range(1, len(closes))][-n:]
-        g = [x for x in d if x > 0]; l_ = [-x for x in d if x < 0]
-        ag = sum(g)/n if g else 0.0; al = sum(l_)/n if l_ else 1e-9
-        return 100 - 100 / (1 + ag / al)
+        """Wilder 平滑 RSI（与TradingView一致）"""
+        if len(closes) < n + 2: return 50.0
+        d = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        gains = [max(x, 0) for x in d]
+        losses = [max(-x, 0) for x in d]
+        avg_gain = sum(gains[:n]) / n
+        avg_loss = sum(losses[:n]) / n
+        for i in range(n, len(gains)):
+            avg_gain = (avg_gain * (n - 1) + gains[i]) / n
+            avg_loss = (avg_loss * (n - 1) + losses[i]) / n
+        if avg_loss < 1e-10: return 100.0
+        rs = avg_gain / avg_loss
+        return round(100 - 100 / (1 + rs), 2)
 
     def _macd(self, closes, fast=12, slow=26, sig=9):
         if len(closes) < slow + sig: return 0.0, 0.0, 0.0
         ef = self._ema_series(closes, fast)
         es = self._ema_series(closes, slow)
+        # 对齐：ef比es多 (slow-fast) 个，取末尾 min(len) 个做差
         ml = min(len(ef), len(es))
-        dif = [ef[-(ml-i)] - es[-(ml-i)] for i in range(ml)]
+        dif = [ef[-ml + i] - es[-ml + i] for i in range(ml)]
         sv  = self._ema_series(dif, sig)
         if not sv: return 0.0, 0.0, 0.0
         return dif[-1], sv[-1], dif[-1] - sv[-1]
 
     def _supertrend(self, highs, lows, closes, n=10, mult=3.0):
-        """价格低于下轨(hl2-mult*atr)=上升趋势up；高于上轨(hl2+mult*atr)=下降趋势down；区间内=neutral"""
-        if len(closes) < n + 1: return "neutral"
+        """标准动态翻转 Supertrend（与TradingView一致）
+        price > supertrend_line → 多头 up
+        price < supertrend_line → 空头 down
+        """
+        if len(closes) < n + 2: return "neutral"
         trs = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
                for i in range(1, len(closes))]
-        atr = sum(trs[-n:]) / n
-        hl2 = (highs[-1] + lows[-1]) / 2
-        lower = hl2 - mult * atr  # 下轨：价格站上=多头
-        upper = hl2 + mult * atr  # 上轨：价格跌破=空头
-        p = closes[-1]
-        if p >= lower and p <= upper: return "neutral"  # 价格在区间内
-        if p < lower:  return "up"    # 价格跌破下轨，已是超卖，反转看多
-        return "down"                 # 价格突破上轨，已是超买，反转看空
+        # ATR 序列（简单移动平均）
+        atrs = []
+        for i in range(len(trs)):
+            if i < n - 1:
+                atrs.append(None)
+            else:
+                atrs.append(sum(trs[i-n+1:i+1]) / n)
+        # 计算上下轨和 Supertrend
+        st_direction = 1  # 1=up(多头), -1=down(空头)
+        prev_upper = prev_lower = prev_st = None
+        for i in range(len(atrs)):
+            if atrs[i] is None:
+                continue
+            hl2 = (highs[i+1] + lows[i+1]) / 2
+            basic_upper = hl2 + mult * atrs[i]
+            basic_lower = hl2 - mult * atrs[i]
+            # 上轨只能下降或持平（防止频繁翻转）
+            if prev_upper is None:
+                upper = basic_upper
+                lower = basic_lower
+            else:
+                upper = basic_upper if basic_upper < prev_upper or closes[i] > prev_upper else prev_upper
+                lower = basic_lower if basic_lower > prev_lower or closes[i] < prev_lower else prev_lower
+            # 方向翻转逻辑
+            if prev_st is None:
+                st_val = lower if st_direction == 1 else upper
+            else:
+                if st_direction == 1:
+                    st_val = lower
+                    if closes[i+1] < st_val:
+                        st_direction = -1
+                        st_val = upper
+                else:
+                    st_val = upper
+                    if closes[i+1] > st_val:
+                        st_direction = 1
+                        st_val = lower
+            prev_upper = upper
+            prev_lower = lower
+            prev_st    = st_val
+        if   st_direction == 1:  return "up"
+        elif st_direction == -1: return "down"
+        return "neutral"
 
     def _vwap(self, highs, lows, closes, volumes):
         typical = [(h+l+c)/3 for h,l,c in zip(highs, lows, closes)]
