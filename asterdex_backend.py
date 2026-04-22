@@ -406,6 +406,8 @@ state = TradingState()
 # 每个币种独立的开仓锁，防止并发 gather 里两个协程同时通过持仓检查后重复开仓
 # asyncio.Lock 是协程安全的（同一事件循环内），无需 threading.Lock
 _sym_locks: Dict[int, Dict[str, asyncio.Lock]] = {}  # uid -> {symbol -> Lock}
+# 全局持仓计数锁：防止多币种并发 gather 同时通过 open_count 检查，穿越 max_open_positions 限制
+_open_pos_lock: Dict[int, asyncio.Lock] = {}  # uid -> Lock
 
 def _get_sym_lock(symbol: str, uid: int = 0) -> asyncio.Lock:
     if uid not in _sym_locks:
@@ -413,6 +415,11 @@ def _get_sym_lock(symbol: str, uid: int = 0) -> asyncio.Lock:
     if symbol not in _sym_locks[uid]:
         _sym_locks[uid][symbol] = asyncio.Lock()
     return _sym_locks[uid][symbol]
+
+def _get_open_pos_lock(uid: int = 0) -> asyncio.Lock:
+    if uid not in _open_pos_lock:
+        _open_pos_lock[uid] = asyncio.Lock()
+    return _open_pos_lock[uid]
 
 # set_leverage 缓存：{uid: {symbol: (leverage, last_set_time)}}，30s内相同杠杆不重复调用
 _leverage_cache: Dict[int, Dict[str, tuple]] = {}
@@ -1917,6 +1924,9 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
     _mode = sym_cfg.get("hft_mode") or s.get("hft_mode") or _st.settings.get("hft_mode", "balanced")
     if _mode in ("aggressive", "turbo"):
         cooldown = min(cooldown, 10)  # 激进模式最多等10s，不被用户全局冷却卡死
+    # Fix1: 反向平仓专用冷却：不受 aggressive/turbo 模式缩短，固定至少60s
+    # 防止震荡行情中反复触发反向平仓→开仓→再平仓的连续亏损循环
+    _REVERSE_COOLDOWN = max(sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60)), 60)
 
     # ── 止损/止盈/移动止损（优先级最高）统一走_guardian_close防重复平仓 ──
     _pt_ps = get_pos_tracker(uid)
@@ -1973,10 +1983,12 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                         _gross2 = (price - _ep2) * _sz2 if _rev_te.get("side") == "BUY" else (_ep2 - price) * _sz2
                         _rev_pnl = round(_gross2 - _sz2 * _ep2 * FEE_RATE - _sz2 * price * FEE_RATE, 4)
                     _pt_ps.clear(symbol)
+                    # Fix1: 反向平仓写入专用冷却时间，不受 aggressive/turbo 缩短（固定≥60s）
                     _cd_ps[symbol] = time.time()
+                    _cd_ps[f"{symbol}_reverse_cd"] = time.time()  # 反向平仓标记，冷却检查时使用
                     pnl_str2 = f"+${_rev_pnl:.4f}" if _rev_pnl >= 0 else f"-${abs(_rev_pnl):.4f}"
                     await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                        "text": f"↩️ {symbol} 反向平仓 {pos_side} @ {price:.4f} 盈亏:{pnl_str2} ⏳冷却{cooldown}s"}, user_id=uid)
+                        "text": f"↩️ {symbol} 反向平仓 {pos_side} @ {price:.4f} 盈亏:{pnl_str2} ⏳冷却{_REVERSE_COOLDOWN}s"}, user_id=uid)
                     asyncio.create_task(alerting.alert_position_closed(symbol, _rev_pnl, "反向信号", uid=uid))
                 finally:
                     _gc_ps.discard(symbol)
@@ -2009,8 +2021,13 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
             asyncio.ensure_future(alerting.alert_circuit_breaker(daily_pnl, max_daily_loss, uid=uid))
         return
 
+    # Fix1: 反向平仓后的冷却使用专用时长（不受 aggressive/turbo 模式缩短）
+    _reverse_cd_ts = _cd_ps.get(f"{symbol}_reverse_cd", 0)
+    _effective_cooldown = _REVERSE_COOLDOWN if (time.time() - _reverse_cd_ts < _REVERSE_COOLDOWN) else cooldown
     last_close = _cd_ps.get(symbol, 0)
-    if time.time() - last_close < cooldown:
+    if time.time() - last_close < _effective_cooldown:
+        cooldown = _effective_cooldown  # 更新日志中显示的冷却时长
+    if time.time() - last_close < _effective_cooldown:
         remaining = int(cooldown - (time.time() - last_close))
         last_cd_log = _cd_ps.get(f"{symbol}_log", 0)
         if time.time() - last_cd_log >= 15:
@@ -2019,8 +2036,9 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                 "text": f"⏳ {symbol} 冷却中，还需 {remaining}s"}, user_id=uid)
         return
 
-    open_count = len([p for p in _st.positions if abs(p.get("size", 0)) > 1e-9])
+    # Fix2: max_open_positions 检查移入全局锁内（见开仓锁区域），此处仅做快速预检（无锁，可能有极小并发窗口）
     max_pos = sym_cfg.get("max_open_positions", s.get("max_open_positions", 3))
+    open_count = len([p for p in _st.positions if abs(p.get("size", 0)) > 1e-9])
     if open_count >= max_pos:
         last_log = _cd_ps.get(f"{symbol}_maxpos_log", 0)
         if time.time() - last_log >= 60:
@@ -2071,16 +2089,19 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
         asyncio.ensure_future(alerting.alert_balance_critical(_st.available, uid=uid))
         return
 
+    # Fix4: 余额保守系数——按当前已开仓数扣减，防止余额计算过期导致超额下单
+    # 每个已持仓占用 trade_usd 额度，剩余才可用于新仓
+    _occupied_usd = len(get_pos_tracker(uid).entries) * trade_usd
+    _safe_available = max(_st.available - _occupied_usd * 0.1, _st.available * 0.85)
     # ── 动态余额兜底：余额不足时按实际可用缩小，不强行跳过 ──
-    if _st.available < trade_usd:
-        trade_usd = _st.available * 0.8  # 用可用余额的80%，留20%作手续费缓冲
-        trade_usd = max(trade_usd, 3.0)
-        if _st.available < 3.0:
-            last_log = _cd_ps.get(f"{symbol}_bal_log", 0)
-            if time.time() - last_log >= 60:
-                _cd_ps[f"{symbol}_bal_log"] = time.time()
-                await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                    "text": f"💸 余额仅 ${_st.available:.2f}，已接近下限，请注意风控", "level": "warn"}, user_id=uid)
+    if _safe_available < trade_usd:
+        trade_usd = _safe_available * 0.8  # 用保守可用余额的80%，留20%作手续费缓冲
+        last_log = _cd_ps.get(f"{symbol}_bal_log", 0)
+        if time.time() - last_log >= 60:
+            _cd_ps[f"{symbol}_bal_log"] = time.time()
+            await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
+                "text": f"💸 余额仅 ${_st.available:.2f}，已接近下限，请注意风控", "level": "warn"}, user_id=uid)
+        if trade_usd < 3.0:  # 缩减后仍不足最小下单额，跳过
             return
 
     # ── 名义价值校验：不足时自动提升杠杆，而不是跳过 ──
@@ -2138,7 +2159,16 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                 asyncio.ensure_future(alerting.alert_spike_protection(symbol, _kline_close, cur_mkt, _dev, uid=uid))
             return
 
-    # ── 市价开仓（加锁：双重检查 + 设杠杆 + 下单 + tracker记录 原子化）──
+    # ── 市价开仓（双层锁：全局持仓计数锁 + 币种锁，原子化防并发穿越）──
+    async with _get_open_pos_lock(uid):   # Fix2: 全局锁保证 open_count 检查+开仓原子化
+        # 全局锁内重新检查持仓数（此时其他币种协程无法并发通过此检查）
+        _cur_open = len([p for p in _st.positions if abs(p.get("size", 0)) > 1e-9])
+        # 同时计入 pos_tracker（tracker 比 REST 同步更及时）
+        _cur_open_tracker = len(get_pos_tracker(uid).entries)
+        _real_open = max(_cur_open, _cur_open_tracker)
+        if _real_open >= max_pos:
+            logger.debug(f"🔒 {symbol} 全局锁内持仓数 {_real_open}/{max_pos}，跳过")
+            return
     async with _get_sym_lock(symbol, uid):
         _pt_open = get_pos_tracker(uid)
         # 加锁后再次检查持仓（防止并发等待锁期间已被其他协程开仓）
@@ -2546,6 +2576,7 @@ async def auth_logout(request: Request, user=Depends(get_current_user)):
     _user_states.pop(uid, None)
     _circuit.pop(uid, None)
     _sym_locks.pop(uid, None)
+    _open_pos_lock.pop(uid, None)
     _leverage_cache.pop(uid, None)
     _guardian_closing.pop(uid, None)
     _close_cooldowns.pop(uid, None)
@@ -2751,6 +2782,7 @@ async def admin_kick_user(body: dict, user=Depends(get_admin_user)):
     _user_states.pop(uid, None)
     _circuit.pop(uid, None)
     _sym_locks.pop(uid, None)
+    _open_pos_lock.pop(uid, None)
     _leverage_cache.pop(uid, None)
     _guardian_closing.pop(uid, None)
     _close_cooldowns.pop(uid, None)
