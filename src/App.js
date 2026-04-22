@@ -3029,7 +3029,7 @@ function App() {
                                     <div style={{fontSize:9,color:'var(--text-dim)',marginBottom:2}}>{s.l}</div>
                                     <div style={{fontWeight:800,fontSize:12,fontFamily:'monospace',
                                       color:s.raw?diffColor(s.raw[0],s.raw[1],s.hi):'var(--text)'}}>
-                                      {typeof s.v === 'number' ? s.v : s.v}
+                                      {s.v}
                                     </div>
                                   </div>
                                 ))}

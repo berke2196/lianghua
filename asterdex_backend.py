@@ -3066,7 +3066,6 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
     历史回测：拉取历史K线 → 逐根跑信号引擎 → 模拟开平仓 → 返回报告
     """
     uid = int(user["sub"])
-    st  = get_user_state(uid)
 
     # 拉取历史K线（最多3000根，防止超时）
     limit = min(int(req.limit), 3000)
@@ -3274,7 +3273,7 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
     参数网格搜索：对多组 stop_loss / take_profit / min_confidence / hft_mode 组合跑回测，
     找出综合评分最高的参数组合并返回推荐，支持一键应用。
     """
-    uid = int(user["sub"]); st = get_user_state(uid)
+    uid = int(user["sub"])
     limit = min(int(req.limit), 3000)
     data = await aster_get("/fapi/v3/klines",
         {"symbol": req.symbol, "interval": req.interval, "limit": limit}, user_id=uid)
