@@ -807,6 +807,8 @@ async def _guardian_close(symbol: str, price: float, exit_reason: str, uid: int 
     _te = dict(_pt.entries.get(symbol, {}))  # 平仓前快照，防止await期间被清除
     _cd = _get_close_cooldown(uid)
     _cd[symbol] = time.time()  # 立即预写冷却，防止并发窗口期漏掉
+    # Fix-A: 守护平仓（止损/止盈）冷却固定≥60s，与反向平仓一致，防止止损后立即反手再套
+    _guardian_cooldown = max(_gst.settings.get("cooldown_secs", 60), 60)
     try:
         await cancel_all_orders(symbol, user_id=uid)
         result = await close_position(symbol, user_id=uid)
@@ -824,13 +826,12 @@ async def _guardian_close(symbol: str, price: float, exit_reason: str, uid: int 
             _gross = (price - _ep) * _sz if _te.get("side") == "BUY" else (_ep - price) * _sz
             _pnl = round(_gross - _sz * _ep * FEE_RATE - _sz * price * FEE_RATE, 4)
         _pt.clear(symbol)
-        # 平仓后设置冷却，防止止损后立即反手再开单
-        _cooldown = _gst.settings.get("cooldown_secs", 30)
-        _cd[symbol] = time.time()
+        _cd[symbol] = time.time()  # 平仓成功后再次确认冷却起点
+        _cd[f"{symbol}_reverse_cd"] = time.time()  # 同时写反向冷却标记，确保 _effective_cooldown 生效
         pnl_str = f"+${_pnl:.4f}" if _pnl >= 0 else f"-${abs(_pnl):.4f}"
-        logger.info(f"🛡️ 守护平仓完成 {exit_reason} {symbol} @ {price:.4f} 盈亏:{pnl_str} ⏳冷却{_cooldown}s")
+        logger.info(f"🛡️ 守护平仓完成 {exit_reason} {symbol} @ {price:.4f} 盈亏:{pnl_str} ⏳冷却{_guardian_cooldown}s")
         await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-            "text": f"🛡️ {exit_reason} {symbol} @ {price:.4f} 盈亏:{pnl_str} ⏳冷却{_cooldown}s"}, user_id=uid)
+            "text": f"🛡️ {exit_reason} {symbol} @ {price:.4f} 盈亏:{pnl_str} ⏳冷却{_guardian_cooldown}s"}, user_id=uid)
         asyncio.create_task(alerting.alert_position_closed(symbol, _pnl, exit_reason, uid=uid))
     except Exception as e:
         logger.error(f"守护平仓失败 {symbol}: {e}")
@@ -859,8 +860,9 @@ async def account_sync_loop(uid: int = 0):
                     rebuild_tracker_from_positions(_st, uid=uid)
                     break
             _exchange_syms = {p["symbol"] for p in _st.positions}
+            _gc_set = _get_guardian_closing(uid)  # Fix-C: 跳过正在守护平仓中的symbol
             for _ghost in list(_pt_sync.entries.keys()):
-                if _ghost not in _exchange_syms:
+                if _ghost not in _exchange_syms and _ghost not in _gc_set:
                     logger.debug(f"🧹 自动清除幽灵tracker: {_ghost}（交易所已无持仓）")
                     _pt_sync.clear(_ghost)
             for _p in list(_st.positions):
@@ -1625,10 +1627,11 @@ class CryptoHFTEngine:
                     return "HOLD", 0.0, f"ADX{adx_v:.1f}震荡MR不足({mr_score:.2f})"
                 # 均值回归置信要求：同时满足用户设定的min_confidence和MR独立下限
                 # MR独立下限：turbo=0.20, aggressive=0.25（防止阈值过高永远过滤震荡行情）
-                mr_floor = 0.20 if mode == "turbo" else 0.25
-                mr_min_conf = max(min_conf, mr_floor)
-                if mr_conf < mr_min_conf:
-                    return "HOLD", 0.0, f"MR置信{mr_conf:.2f}<{mr_min_conf:.2f}"
+                # Fix-D: MR置信不受用户min_confidence截断（MR分数最大~0.5，远低于趋势跟踪的0.65+）
+                # 使用独立下限：turbo=0.10, aggressive=0.15
+                mr_floor = 0.10 if mode == "turbo" else 0.15
+                if mr_conf < mr_floor:
+                    return "HOLD", 0.0, f"MR置信{mr_conf:.2f}<{mr_floor:.2f}"
                 if mr_side == "BUY"  and not s.get("enable_long",  True): return "HOLD", mr_conf, "做多已禁用"
                 if mr_side == "SELL" and not s.get("enable_short", True): return "HOLD", mr_conf, "做空已禁用"
                 return mr_side, mr_conf, f"[MR] ADX{adx_v:.1f} MR={mr_score:.2f}"
