@@ -2974,12 +2974,12 @@ function App() {
                         {label:'盈利因子',val:r.profit_factor,color:r.profit_factor>=1.5?'var(--cyan)':r.profit_factor>=1?'var(--yellow)':'var(--pink)'},
                         {label:'最大回撤',val:`${r.max_drawdown} U`,color:'var(--pink)'},
                         {label:'平均盈利',val:`+${r.avg_win} U`,color:'var(--cyan)'},
-                        {label:'平均亏损',val:`${r.avg_loss} U`,color:'var(--pink)'},
+                        {label:'平均亏损',val:`-${r.avg_loss} U`,color:'var(--pink)'},
                       ];
                       return (
                         <div>
                           <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:8}}>
-                            {r.symbol} · {r.interval} · {r.bars}根K线 ({r.bars}根)
+                            {r.symbol} · {r.interval} · 共 {r.bars} 根K线
                           </div>
                           {/* 统计卡片 */}
                           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14}}>

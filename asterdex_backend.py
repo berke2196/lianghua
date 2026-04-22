@@ -3090,12 +3090,12 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
     trades       = []
     equity_curve = []
     equity       = 0.0
-    position     = None   # {"side","entry","sz","sl","tp","open_i"}
-    max_equity   = 0.0
+    position     = None   # {"side","entry","sz","sl","tp","open_ts"}
+    max_equity   = None   # 首次设置时才赋值，避免全亏时 max_drawdown=0
     max_drawdown = 0.0
 
     for i in range(65, len(data)):
-        window  = data[:i+1]
+        window  = data[:i+1]   # 当前时间点可见的历史切片
         candle  = data[i]
         hi      = float(candle[2])
         lo      = float(candle[3])
@@ -3135,7 +3135,8 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
                     "reason":   exit_reason,
                     "equity":   equity,
                 })
-                max_equity   = max(max_equity, equity)
+                if max_equity is None or equity > max_equity:
+                    max_equity = equity
                 dd           = max_equity - equity
                 max_drawdown = max(max_drawdown, dd)
                 equity_curve.append({"ts": ts_str, "equity": equity})
@@ -3144,12 +3145,25 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
                 equity_curve.append({"ts": ts_str, "equity": equity})
             continue
 
-        # ── 无持仓：跑信号 ──
-        side, conf, block = signal_engine.generate(sim_cfg, sym_short)
-        if side == "HOLD":
+        # ── 无持仓：跑信号（用当前时间点的历史切片 window 计算，防止未来数据泄露）──
+        side, conf, scores = signal_engine.compute(window, sym_short)
+        # 应用 generate 的过滤逻辑（置信/方向/盈亏比）
+        if side == "HOLD" or conf < sim_cfg["min_confidence"]:
             equity_curve.append({"ts": ts_str, "equity": equity})
             continue
-
+        if side == "BUY"  and not sim_cfg.get("enable_long",  True):
+            equity_curve.append({"ts": ts_str, "equity": equity})
+            continue
+        if side == "SELL" and not sim_cfg.get("enable_short", True):
+            equity_curve.append({"ts": ts_str, "equity": equity})
+            continue
+        # 盈亏比校验
+        net_tp = sim_cfg["take_profit_pct"] - 2 * FEE
+        net_sl = sim_cfg["stop_loss_pct"]   + 2 * FEE
+        rr_needed = {"conservative": 1.8, "balanced": 1.0, "aggressive": 0.2, "turbo": 0.15}.get(sim_cfg["hft_mode"], 1.0)
+        if net_sl > 0 and (net_tp / net_sl) < rr_needed:
+            equity_curve.append({"ts": ts_str, "equity": equity})
+            continue
         # 以当前收盘价开仓
         notional = req.trade_size_usd * req.leverage
         sz       = notional / close
@@ -3181,11 +3195,13 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
     total   = len(trades)
     wins    = sum(1 for t in trades if t["pnl"] > 0)
     losses  = total - wins
-    win_rate = round(wins / total * 100, 1) if total > 0 else 0
+    win_rate  = round(wins / total * 100, 1) if total > 0 else 0
     total_pnl = round(sum(t["pnl"] for t in trades), 4)
-    avg_win  = round(sum(t["pnl"] for t in trades if t["pnl"] > 0) / max(wins, 1), 4)
-    avg_loss = round(sum(t["pnl"] for t in trades if t["pnl"] <= 0) / max(losses, 1), 4)
-    profit_factor = round(abs(avg_win * wins / (avg_loss * losses + 1e-9)), 2)
+    win_pnl_sum  = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+    loss_pnl_sum = abs(sum(t["pnl"] for t in trades if t["pnl"] <= 0))
+    avg_win  = round(win_pnl_sum  / wins   if wins   > 0 else 0, 4)
+    avg_loss = round(loss_pnl_sum / losses if losses > 0 else 0, 4)
+    profit_factor = round(win_pnl_sum / loss_pnl_sum, 2) if loss_pnl_sum > 0 else (99.0 if wins > 0 else 0.0)
 
     # 精简equity_curve（最多200点）
     step = max(1, len(equity_curve) // 200)
