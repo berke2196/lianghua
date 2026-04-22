@@ -139,12 +139,10 @@ function App() {
         // 同步到本地 settings state，然后自动持久化保存
         setSettings(p => {
           const next = {...p, ...fullParams};
-          // 同步到当前选中币种的独立设置（如有）
+          // 同步到回测所选币种的独立设置（无论是否已有独立设置都写入）
           const targetSym = btForm.symbol || p.symbol || 'BTCUSDT';
           const nextSymSettings = {...symbolSettings};
-          if (nextSymSettings[targetSym]) {
-            nextSymSettings[targetSym] = {...nextSymSettings[targetSym], ...fullParams};
-          }
+          nextSymSettings[targetSym] = {...(nextSymSettings[targetSym]||{}), ...fullParams};
           // 异步触发 /api/settings 持久化（用最新 next 构造 payload）
           const { symbol_settings: _drop, ...globalOnly } = next;
           safeAuthFetch('/api/settings', {
