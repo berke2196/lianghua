@@ -3066,21 +3066,28 @@ function App() {
                                   </button>
                                 )}
                               </div>
-                              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}}>
+                              <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5}}>
                                 {[
-                                  {l:'盈利因子',v:p.profit_factor,b:cur.profit_factor,hi:true},
+                                  {l:'盈利因子',v:p.profit_factor,b:cur.profit_factor,hi:true,raw:[p.profit_factor,cur.profit_factor]},
                                   {l:'胜率',v:`${p.win_rate}%`,b:`${cur.win_rate}%`,hi:true,raw:[p.win_rate,cur.win_rate]},
-                                  {l:'总盈亏',v:`${p.total_pnl>=0?'+':''}${p.total_pnl}U`,b:'',hi:true,raw:[p.total_pnl,0]},
-                                  {l:'最大回撤',v:`${p.max_drawdown}U`,b:`${cur.max_drawdown}U`,hi:false,raw:[p.max_drawdown,cur.max_drawdown]},
+                                  {l:'笔数',v:`${p.total_trades}笔`,b:`${cur.total_trades}笔`,hi:true,raw:[p.total_trades,cur.total_trades]},
+                                  {l:'均盈/笔',v:`${p.avg_pnl>=0?'+':''}${(p.avg_pnl||0).toFixed(2)}U`,b:`${(cur.avg_pnl||0).toFixed(2)}U`,hi:true,raw:[p.avg_pnl||0,cur.avg_pnl||0]},
+                                  {l:'最大回撤',v:`-${(p.max_drawdown||0).toFixed(2)}U`,b:`-${(cur.max_drawdown||0).toFixed(2)}U`,hi:false,raw:[p.max_drawdown||0,cur.max_drawdown||0]},
                                 ].map((s,i)=>(
-                                  <div key={i} style={{textAlign:'center',background:'rgba(0,0,0,0.2)',borderRadius:4,padding:'5px 6px'}}>
+                                  <div key={i} style={{textAlign:'center',background:'rgba(0,0,0,0.2)',borderRadius:4,padding:'5px 4px'}}>
                                     <div style={{fontSize:9,color:'var(--text-dim)',marginBottom:2}}>{s.l}</div>
-                                    <div style={{fontWeight:800,fontSize:12,fontFamily:'monospace',
+                                    <div style={{fontWeight:800,fontSize:11,fontFamily:'monospace',
                                       color:s.raw?diffColor(s.raw[0],s.raw[1],s.hi):'var(--text)'}}>
                                       {s.v}
                                     </div>
+                                    {s.b!==undefined && s.b!=='' && (
+                                      <div style={{fontSize:8,color:'var(--text-dim)',marginTop:1}}>基准:{s.b}</div>
+                                    )}
                                   </div>
                                 ))}
+                              </div>
+                              <div style={{marginTop:6,fontSize:9,color:'var(--text-dim)',textAlign:'right'}}>
+                                基于 {o.bars}根K线 · 每笔{btForm.trade_size_usd||10}U×{btForm.leverage||5}倍 · 总盈亏 <b style={{color:p.total_pnl>=0?'var(--cyan)':'var(--pink)'}}>{p.total_pnl>=0?'+':''}{(p.total_pnl||0).toFixed(2)}U</b>
                               </div>
                             </div>
                           ))}
@@ -3090,8 +3097,10 @@ function App() {
                             <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:11,color:'var(--text-mid)'}}>
                               <span>SL {pctFmt(cur.stop_loss_pct)} · TP {pctFmt(cur.take_profit_pct)} · 置信 {cur.min_confidence} · {modeLabel[cur.hft_mode]||cur.hft_mode}</span>
                               <span>盈利因子 <b>{cur.profit_factor}</b></span>
-                              <span>胜率 <b>{cur.win_rate}%</b></span>
-                              <span>回撤 <b>{cur.max_drawdown}U</b></span>
+                              <span>胜率 <b>{cur.win_rate}%</b> ({cur.total_trades}笔)</span>
+                              <span>均盈/笔 <b style={{color:(cur.avg_pnl||0)>=0?'var(--cyan)':'var(--pink)'}}>{(cur.avg_pnl||0)>=0?'+':''}{(cur.avg_pnl||0).toFixed(2)}U</b></span>
+                              <span>总盈亏 <b style={{color:(cur.total_pnl||0)>=0?'var(--cyan)':'var(--pink)'}}>{(cur.total_pnl||0)>=0?'+':''}{(cur.total_pnl||0).toFixed(2)}U</b></span>
+                              <span>回撤 <b style={{color:'var(--pink)'}}>-{(cur.max_drawdown||0).toFixed(2)}U</b></span>
                             </div>
                           </div>
                         </div>

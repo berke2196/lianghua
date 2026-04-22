@@ -3401,12 +3401,19 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
     win_pnl=sum(p for p in trades if p>0); loss_pnl=abs(sum(p for p in trades if p<=0))
     profit_factor=round(win_pnl/loss_pnl,2) if loss_pnl>0 else (99.0 if wins>0 else 0.0)
     score = profit_factor * (wins/total if total>0 else 0) - max_drawdown * 0.1
+    total_pnl = round(sum(trades),4)
+    avg_pnl   = round(total_pnl / total, 4) if total > 0 else 0.0
+    avg_win   = round(win_pnl  / wins,   4) if wins   > 0 else 0.0
+    avg_loss  = round(loss_pnl / losses, 4) if losses > 0 else 0.0
     return {
         "total_trades": total,
         "wins": wins,
         "losses": losses,
         "win_rate": round(wins/total*100,1) if total>0 else 0,
-        "total_pnl": round(sum(trades),4),
+        "total_pnl": total_pnl,
+        "avg_pnl":   avg_pnl,
+        "avg_win":   avg_win,
+        "avg_loss":  avg_loss,
         "profit_factor": profit_factor,
         "max_drawdown": round(max_drawdown,4),
         "score": round(score,4),
