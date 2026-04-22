@@ -2972,7 +2972,7 @@ function App() {
                     {/* 优化结果 */}
                     {btOptResult && (()=>{
                       const o = btOptResult;
-                      const best = o.best; const cur = o.current_stats;
+                      const cur = o.current_stats;
                       const modeLabel = {conservative:'精准',balanced:'平衡',aggressive:'激进',turbo:'极速'};
                       const pctFmt = v => `${(v*100).toFixed(1)}%`;
                       const diffColor = (a,b,higherBetter=true) => {

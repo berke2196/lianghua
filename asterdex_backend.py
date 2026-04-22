@@ -3087,142 +3087,111 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
     }
     FEE = 0.0005  # 单边手续费
 
-    trades       = []
-    equity_curve = []
-    equity       = 0.0
-    position     = None   # {"side","entry","sz","sl","tp","open_ts"}
-    max_equity   = None   # 首次设置时才赋值，避免全亏时 max_drawdown=0
-    max_drawdown = 0.0
+    def _do_backtest():
+        """CPU密集循环，通过run_in_executor卸到线程池"""
+        trades       = []
+        equity_curve = []
+        equity       = 0.0
+        position     = None
+        max_equity   = None
+        max_drawdown = 0.0
 
-    for i in range(65, len(data)):
-        window  = data[:i+1]   # 当前时间点可见的历史切片
-        candle  = data[i]
-        hi      = float(candle[2])
-        lo      = float(candle[3])
-        close   = float(candle[4])
-        ts_ms   = int(candle[0])
-        ts_str  = datetime.utcfromtimestamp(ts_ms / 1000).strftime("%m-%d %H:%M")
+        for i in range(65, len(data)):
+            window = data[:i+1]
+            candle = data[i]
+            hi     = float(candle[2])
+            lo     = float(candle[3])
+            close  = float(candle[4])
+            ts_str = datetime.utcfromtimestamp(int(candle[0]) / 1000).strftime("%m-%d %H:%M")
 
-        # ── 持仓中检查止盈止损 ──
+            # ── 持仓中检查止盈止损 ──
+            if position:
+                exit_price = exit_reason = None
+                if position["side"] == "BUY":
+                    if lo <= position["sl"]:   exit_price = position["sl"];  exit_reason = "止损"
+                    elif hi >= position["tp"]: exit_price = position["tp"]; exit_reason = "止盈"
+                else:
+                    if hi >= position["sl"]:   exit_price = position["sl"];  exit_reason = "止损"
+                    elif lo <= position["tp"]: exit_price = position["tp"]; exit_reason = "止盈"
+                if exit_price:
+                    sz = position["sz"]; entry = position["entry"]
+                    gross = (exit_price - entry) * sz if position["side"] == "BUY" else (entry - exit_price) * sz
+                    pnl = round(gross - sz * entry * FEE - sz * exit_price * FEE, 4)
+                    equity = round(equity + pnl, 4)
+                    trades.append({"open_ts": position["open_ts"], "close_ts": ts_str,
+                                   "side": position["side"], "entry": round(entry, 4),
+                                   "exit": round(exit_price, 4), "pnl": pnl,
+                                   "reason": exit_reason, "equity": equity})
+                    if max_equity is None or equity > max_equity: max_equity = equity
+                    max_drawdown = max(max_drawdown, max_equity - equity)
+                    equity_curve.append({"ts": ts_str, "equity": equity})
+                    position = None
+                else:
+                    equity_curve.append({"ts": ts_str, "equity": equity})
+                continue
+
+            # ── 无持仓：跑信号 ──
+            side, conf, _ = signal_engine.compute(window, sym_short)
+            if side == "HOLD" or conf < sim_cfg["min_confidence"]:
+                equity_curve.append({"ts": ts_str, "equity": equity}); continue
+            if side == "BUY"  and not sim_cfg.get("enable_long",  True):
+                equity_curve.append({"ts": ts_str, "equity": equity}); continue
+            if side == "SELL" and not sim_cfg.get("enable_short", True):
+                equity_curve.append({"ts": ts_str, "equity": equity}); continue
+            net_tp = sim_cfg["take_profit_pct"] - 2 * FEE
+            net_sl = sim_cfg["stop_loss_pct"]   + 2 * FEE
+            rr_needed = {"conservative": 1.8, "balanced": 1.0, "aggressive": 0.2, "turbo": 0.15}.get(sim_cfg["hft_mode"], 1.0)
+            if net_sl > 0 and (net_tp / net_sl) < rr_needed:
+                equity_curve.append({"ts": ts_str, "equity": equity}); continue
+            sz = req.trade_size_usd * req.leverage / close
+            sl = close * (1 - req.stop_loss_pct)  if side == "BUY" else close * (1 + req.stop_loss_pct)
+            tp = close * (1 + req.take_profit_pct) if side == "BUY" else close * (1 - req.take_profit_pct)
+            position = {"side": side, "entry": close, "sz": sz, "sl": sl, "tp": tp, "open_ts": ts_str}
+            equity_curve.append({"ts": ts_str, "equity": equity})
+
+        # 强平剩余持仓
         if position:
-            exit_price = None
-            exit_reason = None
-            if position["side"] == "BUY":
-                if lo <= position["sl"]:
-                    exit_price = position["sl"]; exit_reason = "止损"
-                elif hi >= position["tp"]:
-                    exit_price = position["tp"]; exit_reason = "止盈"
-            else:  # SELL
-                if hi >= position["sl"]:
-                    exit_price = position["sl"]; exit_reason = "止损"
-                elif lo <= position["tp"]:
-                    exit_price = position["tp"]; exit_reason = "止盈"
+            last = float(data[-1][4]); sz = position["sz"]; entry = position["entry"]
+            gross = (last - entry) * sz if position["side"] == "BUY" else (entry - last) * sz
+            pnl = round(gross - sz * entry * FEE - sz * last * FEE, 4)
+            equity = round(equity + pnl, 4)
+            trades.append({"open_ts": position["open_ts"], "close_ts": "回测结束",
+                           "side": position["side"], "entry": round(entry, 4),
+                           "exit": round(last, 4), "pnl": pnl, "reason": "强平", "equity": equity})
 
-            if exit_price:
-                sz    = position["sz"]
-                entry = position["entry"]
-                gross = (exit_price - entry) * sz if position["side"] == "BUY" else (entry - exit_price) * sz
-                fee   = sz * entry * FEE + sz * exit_price * FEE
-                pnl   = round(gross - fee, 4)
-                equity = round(equity + pnl, 4)
-                trades.append({
-                    "open_ts":  position["open_ts"],
-                    "close_ts": ts_str,
-                    "side":     position["side"],
-                    "entry":    round(entry, 4),
-                    "exit":     round(exit_price, 4),
-                    "pnl":      pnl,
-                    "reason":   exit_reason,
-                    "equity":   equity,
-                })
-                if max_equity is None or equity > max_equity:
-                    max_equity = equity
-                dd           = max_equity - equity
-                max_drawdown = max(max_drawdown, dd)
-                equity_curve.append({"ts": ts_str, "equity": equity})
-                position = None
-            else:
-                equity_curve.append({"ts": ts_str, "equity": equity})
-            continue
+        return trades, equity_curve, max_drawdown
 
-        # ── 无持仓：跑信号（用当前时间点的历史切片 window 计算，防止未来数据泄露）──
-        side, conf, scores = signal_engine.compute(window, sym_short)
-        # 应用 generate 的过滤逻辑（置信/方向/盈亏比）
-        if side == "HOLD" or conf < sim_cfg["min_confidence"]:
-            equity_curve.append({"ts": ts_str, "equity": equity})
-            continue
-        if side == "BUY"  and not sim_cfg.get("enable_long",  True):
-            equity_curve.append({"ts": ts_str, "equity": equity})
-            continue
-        if side == "SELL" and not sim_cfg.get("enable_short", True):
-            equity_curve.append({"ts": ts_str, "equity": equity})
-            continue
-        # 盈亏比校验
-        net_tp = sim_cfg["take_profit_pct"] - 2 * FEE
-        net_sl = sim_cfg["stop_loss_pct"]   + 2 * FEE
-        rr_needed = {"conservative": 1.8, "balanced": 1.0, "aggressive": 0.2, "turbo": 0.15}.get(sim_cfg["hft_mode"], 1.0)
-        if net_sl > 0 and (net_tp / net_sl) < rr_needed:
-            equity_curve.append({"ts": ts_str, "equity": equity})
-            continue
-        # 以当前收盘价开仓
-        notional = req.trade_size_usd * req.leverage
-        sz       = notional / close
-        sl = close * (1 - req.stop_loss_pct)  if side == "BUY" else close * (1 + req.stop_loss_pct)
-        tp = close * (1 + req.take_profit_pct) if side == "BUY" else close * (1 - req.take_profit_pct)
-        position = {"side": side, "entry": close, "sz": sz, "sl": sl, "tp": tp, "open_ts": ts_str}
-        equity_curve.append({"ts": ts_str, "equity": equity})
+    loop = asyncio.get_running_loop()
+    trades, equity_curve, max_drawdown = await loop.run_in_executor(None, _do_backtest)
 
-    # 若回测结束仍有持仓，按最后收盘价强平
-    if position:
-        last  = float(data[-1][4])
-        sz    = position["sz"]
-        entry = position["entry"]
-        gross = (last - entry) * sz if position["side"] == "BUY" else (entry - last) * sz
-        fee   = sz * entry * FEE + sz * last * FEE
-        pnl   = round(gross - fee, 4)
-        equity = round(equity + pnl, 4)
-        trades.append({
-            "open_ts":  position["open_ts"],
-            "close_ts": "回测结束",
-            "side":     position["side"],
-            "entry":    round(entry, 4),
-            "exit":     round(last, 4),
-            "pnl":      pnl,
-            "reason":   "强平",
-            "equity":   equity,
-        })
-
-    total   = len(trades)
-    wins    = sum(1 for t in trades if t["pnl"] > 0)
-    losses  = total - wins
-    win_rate  = round(wins / total * 100, 1) if total > 0 else 0
-    total_pnl = round(sum(t["pnl"] for t in trades), 4)
+    total        = len(trades)
+    wins         = sum(1 for t in trades if t["pnl"] > 0)
+    losses       = total - wins
+    win_rate     = round(wins / total * 100, 1) if total > 0 else 0
+    total_pnl    = round(sum(t["pnl"] for t in trades), 4)
     win_pnl_sum  = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     loss_pnl_sum = abs(sum(t["pnl"] for t in trades if t["pnl"] <= 0))
-    avg_win  = round(win_pnl_sum  / wins   if wins   > 0 else 0, 4)
-    avg_loss = round(loss_pnl_sum / losses if losses > 0 else 0, 4)
+    avg_win      = round(win_pnl_sum  / wins   if wins   > 0 else 0, 4)
+    avg_loss     = round(loss_pnl_sum / losses if losses > 0 else 0, 4)
     profit_factor = round(win_pnl_sum / loss_pnl_sum, 2) if loss_pnl_sum > 0 else (99.0 if wins > 0 else 0.0)
 
-    # 精简equity_curve（最多200点）
     step = max(1, len(equity_curve) // 200)
-    equity_curve_slim = equity_curve[::step]
-
     return {
         "ok": True,
-        "symbol":       req.symbol,
-        "interval":     req.interval,
-        "bars":         len(data),
-        "total_trades": total,
-        "wins":         wins,
-        "losses":       losses,
-        "win_rate":     win_rate,
-        "total_pnl":    total_pnl,
-        "avg_win":      avg_win,
-        "avg_loss":     avg_loss,
+        "symbol":        req.symbol,
+        "interval":      req.interval,
+        "bars":          len(data),
+        "total_trades":  total,
+        "wins":          wins,
+        "losses":        losses,
+        "win_rate":      win_rate,
+        "total_pnl":     total_pnl,
+        "avg_win":       avg_win,
+        "avg_loss":      avg_loss,
         "profit_factor": profit_factor,
-        "max_drawdown": round(max_drawdown, 4),
-        "trades":       trades[-50:],       # 只返回最近50笔
-        "equity_curve": equity_curve_slim,
+        "max_drawdown":  round(max_drawdown, 4),
+        "trades":        trades[-50:],
+        "equity_curve":  equity_curve[::step],
     }
 
 # ─────────────────────────────────────────────
@@ -3280,8 +3249,9 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
         last=float(data[-1][4]); sz=position["sz"]; entry=position["entry"]
         gross=(last-entry)*sz if position["side"]=="BUY" else (entry-last)*sz
         fee=sz*entry*FEE+sz*last*FEE
-        trades.append(round(gross-fee,4))
-        equity=round(equity+trades[-1],4)
+        _pnl=round(gross-fee,4)
+        trades.append(_pnl)
+        equity=round(equity+_pnl,4)
 
     total=len(trades); wins=sum(1 for p in trades if p>0); losses=total-wins
     win_pnl=sum(p for p in trades if p>0); loss_pnl=abs(sum(p for p in trades if p<=0))
@@ -3319,23 +3289,25 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
     conf_list = [0.60,  0.65,  0.70]
     mode_list = ["balanced", "aggressive"]
 
-    results = []
-    for sl in sl_list:
-        for tp in tp_list:
-            if tp <= sl: continue          # 止盈必须大于止损
-            for conf in conf_list:
-                for mode in mode_list:
-                    cfg = {
-                        "stop_loss_pct":   sl,
-                        "take_profit_pct": tp,
-                        "min_confidence":  conf,
-                        "hft_mode":        mode,
-                        "enable_long":     req.enable_long,
-                        "enable_short":    req.enable_short,
-                    }
-                    stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
-                    if stats["total_trades"] >= 3:  # 至少3笔才计入
-                        results.append({**cfg, **stats})
+    # 构建所有参数组合
+    combos = [
+        {"stop_loss_pct": sl, "take_profit_pct": tp, "min_confidence": conf,
+         "hft_mode": mode, "enable_long": req.enable_long, "enable_short": req.enable_short}
+        for sl in sl_list for tp in tp_list if tp > sl
+        for conf in conf_list for mode in mode_list
+    ]
+
+    # 卸到线程池，避免阻塞事件循环
+    def _grid_search():
+        out = []
+        for cfg in combos:
+            stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
+            if stats["total_trades"] >= 3:
+                out.append({**cfg, **stats})
+        return out
+
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(None, _grid_search)
 
     if not results:
         return {"ok":False,"error":"所有参数组合交易次数不足（<3笔），请切换更短周期或更多K线数量"}
