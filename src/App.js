@@ -42,7 +42,6 @@ function App() {
   const [adminLicenses, setAdminLicenses] = useState([]);
   const [adminTab, setAdminTab] = useState('gen'); // gen | users | licenses
   const [settingsTab, setSettingsTab] = useState('basic'); // basic | risk | symbols | advanced
-  const [expandedSymbol, setExpandedSymbol] = useState(null); // 展开的币种推荐卡片
 
   // 连接
   const [backendOk, setBackendOk] = useState(false);

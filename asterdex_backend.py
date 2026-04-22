@@ -3297,27 +3297,7 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
         for conf in conf_list for mode in mode_list
     ]
 
-    # 卸到线程池，避免阻塞事件循环
-    def _grid_search():
-        out = []
-        for cfg in combos:
-            stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
-            if stats["total_trades"] >= 3:
-                out.append({**cfg, **stats})
-        return out
-
-    loop = asyncio.get_running_loop()
-    results = await loop.run_in_executor(None, _grid_search)
-
-    if not results:
-        return {"ok":False,"error":"所有参数组合交易次数不足（<3笔），请切换更短周期或更多K线数量"}
-
-    # 按综合评分排序
-    results.sort(key=lambda x: x["score"], reverse=True)
-    best = results[0]
-    top3 = results[:3]
-
-    # 当前参数的回测成绩（对比用）
+    # 当前参数配置（用于对比）
     current_cfg = {
         "stop_loss_pct":   req.stop_loss_pct,
         "take_profit_pct": req.take_profit_pct,
@@ -3326,7 +3306,24 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
         "enable_long":     req.enable_long,
         "enable_short":    req.enable_short,
     }
-    current_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage)
+
+    # 所有计算全部卸到线程池，避免阻塞事件循环
+    def _grid_search():
+        out = []
+        for cfg in combos:
+            stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
+            if stats["total_trades"] >= 3:
+                out.append({**cfg, **stats})
+        cur_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage)
+        return out, cur_stats
+
+    loop = asyncio.get_running_loop()
+    results, current_stats = await loop.run_in_executor(None, _grid_search)
+
+    if not results:
+        return {"ok":False,"error":"所有参数组合交易次数不足（<3笔），请切换更短周期或更多K线数量"}
+
+    results.sort(key=lambda x: x["score"], reverse=True)
 
     return {
         "ok":            True,
@@ -3334,8 +3331,8 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
         "interval":      req.interval,
         "bars":          len(data),
         "tested":        len(results),
-        "best":          best,
-        "top3":          top3,
+        "best":          results[0],
+        "top3":          results[:3],
         "current_stats": {**current_cfg, **current_stats},
     }
 
