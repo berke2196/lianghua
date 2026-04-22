@@ -40,6 +40,7 @@ function App() {
   const [adminNewCodes, setAdminNewCodes] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminLicenses, setAdminLicenses] = useState([]);
+  const [adminStats, setAdminStats] = useState(null);
   const [adminTab, setAdminTab] = useState('gen'); // gen | users | licenses
   const [settingsTab, setSettingsTab] = useState('basic'); // basic | risk | symbols | advanced
 
@@ -340,14 +341,17 @@ function App() {
     setAdminGenLoading(false);
   };
 
-  // ─── 管理：加载用户/授权码列表 ───
+  // ─── 管理：加载用户/授权码列表/全局统计 ───
   const loadAdminData = async (tab) => {
     if (!jwtToken) return;
     try {
       if (tab === 'users' || tab === 'all') {
-        const r = await safeAuthFetch('/api/admin/users');
-        const d = await r.json();
-        if (d.ok) setAdminUsers(d.data);
+        const [ru, rs] = await Promise.all([
+          safeAuthFetch('/api/admin/users'),
+          safeAuthFetch('/api/admin/stats'),
+        ]);
+        const du = await ru.json(); if (du.ok) setAdminUsers(du.data);
+        const ds = await rs.json(); if (ds.ok) setAdminStats(ds);
       }
       if (tab === 'licenses' || tab === 'all') {
         const r = await safeAuthFetch('/api/admin/licenses');
@@ -3380,48 +3384,88 @@ function App() {
               {/* ── 用户列表 ── */}
               {adminTab === 'users' && (
                 <div>
+                  {/* 全局统计看板 */}
+                  {adminStats?.global && (()=>{
+                    const g = adminStats.global;
+                    return (
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:16}}>
+                        {[
+                          {l:'总用户',v:g.total_users,sub:`${g.active_users}已激活`,c:'rgba(255,255,255,0.8)'},
+                          {l:'在线人数',v:g.online_count,sub:`${g.trading_count}交易中`,c:'#00f5ff'},
+                          {l:'总交易笔数',v:g.total_trades,sub:`胜率${g.win_rate}%`,c:'#ffb400'},
+                          {l:'全平台盈亏',v:`${g.total_pnl>=0?'+':''}${(g.total_pnl||0).toFixed(2)}U`,sub:`${g.total_wins}笔盈利`,c:g.total_pnl>=0?'#00f564':'#ff2d78'},
+                        ].map((s,i)=>(
+                          <div key={i} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:8,padding:'10px 14px'}}>
+                            <div style={{fontSize:10,color:'rgba(255,255,255,0.4)',marginBottom:4}}>{s.l}</div>
+                            <div style={{fontWeight:800,fontSize:16,color:s.c,fontFamily:'monospace'}}>{s.v}</div>
+                            <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:2}}>{s.sub}</div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                     <span style={{color:'rgba(255,255,255,0.5)',fontSize:13}}>共 {adminUsers.length} 位用户</span>
                     <button onClick={()=>loadAdminData('users')} style={{padding:'4px 12px',background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.15)',borderRadius:4,color:'rgba(255,255,255,0.6)',cursor:'pointer',fontSize:12}}>刷新</button>
                   </div>
                   <div style={{overflowX:'auto'}}>
-                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
                       <thead>
                         <tr style={{borderBottom:'1px solid rgba(255,255,255,0.1)'}}>
-                          {['用户名','邮箱','状态','到期时间','注册时间','操作'].map(h=>(
-                            <th key={h} style={{padding:'8px 12px',textAlign:'left',color:'rgba(255,255,255,0.4)',fontWeight:600,fontSize:11}}>{h}</th>
+                          {['用户名','状态','到期','在线','盈亏/笔数','操作'].map(h=>(
+                            <th key={h} style={{padding:'7px 10px',textAlign:'left',color:'rgba(255,255,255,0.4)',fontWeight:600,fontSize:10,whiteSpace:'nowrap'}}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {adminUsers.map((u,i)=>(
+                        {(adminStats?.users || adminUsers).map((u,i)=>(
                           <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,0.05)'}}
                             onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.03)'}
                             onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                            <td style={{padding:'8px 12px'}}>
-                              <span style={{color:'#e0e0e0',fontWeight:600}}>{u.username}</span>
-                              {u.is_admin ? <span style={{marginLeft:6,fontSize:10,padding:'1px 6px',borderRadius:8,background:'rgba(255,180,0,0.15)',color:'#ffb400',border:'1px solid rgba(255,180,0,0.3)'}}>管理员</span> : null}
+                            <td style={{padding:'7px 10px'}}>
+                              <div style={{color:'#e0e0e0',fontWeight:600}}>{u.username}</div>
+                              {u.is_admin && <span style={{fontSize:9,padding:'1px 5px',borderRadius:8,background:'rgba(255,180,0,0.15)',color:'#ffb400',border:'1px solid rgba(255,180,0,0.3)'}}>管理员</span>}
                             </td>
-                            <td style={{padding:'8px 12px',color:'rgba(255,255,255,0.5)',fontSize:12}}>{u.email}</td>
-                            <td style={{padding:'8px 12px'}}>
-                              <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,
+                            <td style={{padding:'7px 10px'}}>
+                              <span style={{fontSize:10,padding:'2px 7px',borderRadius:10,
                                 background: u.is_active ? 'rgba(0,245,100,0.1)' : 'rgba(255,45,120,0.1)',
                                 color: u.is_active ? '#00f564' : '#ff2d78',
                                 border: `1px solid ${u.is_active ? 'rgba(0,245,100,0.3)' : 'rgba(255,45,120,0.3)'}`}}>
-                                {u.is_active ? '已激活' : '未激活'}
+                                {u.is_active ? '正常' : '封禁'}
                               </span>
                             </td>
-                            <td style={{padding:'8px 12px',color:'rgba(255,255,255,0.5)',fontSize:12}}>
+                            <td style={{padding:'7px 10px',fontSize:11}}>
                               {u.expires_at ? (
-                                <span style={{color: new Date(u.expires_at) < new Date() ? '#ff2d78' : 'rgba(255,255,255,0.5)'}}>
-                                  {u.expires_at.slice(0,10)}
+                                <span style={{color: u.expired ? '#ff2d78' : 'rgba(255,255,255,0.5)'}}>
+                                  {u.expires_at.slice(0,10)}{u.expired?' ⚠️过期':''}
                                 </span>
                               ) : '—'}
                             </td>
-                            <td style={{padding:'8px 12px',color:'rgba(255,255,255,0.4)',fontSize:11}}>{(u.created_at||'').slice(0,16)}</td>
-                            <td style={{padding:'8px 12px'}}>
-                              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                                <button onClick={()=>{setChangePwdTarget(u.username);setChangePwdVal('');setChangePwdMsg('');}} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,255,0.08)',border:'1px solid rgba(0,245,255,0.3)',color:'var(--cyan)',cursor:'pointer'}}>改密码</button>
+                            <td style={{padding:'7px 10px'}}>
+                              {u.logged_in !== undefined ? (
+                                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                                  <span style={{fontSize:10,color:u.logged_in?'#00f5ff':'rgba(255,255,255,0.3)'}}>
+                                    {u.logged_in ? '🟢 在线' : '⚫ 离线'}
+                                  </span>
+                                  {u.is_trading && <span style={{fontSize:9,color:'#ffb400'}}>⚡ 交易中</span>}
+                                </div>
+                              ) : (
+                                <span style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>—</span>
+                              )}
+                            </td>
+                            <td style={{padding:'7px 10px',fontFamily:'monospace'}}>
+                              {u.total_trades !== undefined ? (
+                                <div style={{display:'flex',flexDirection:'column',gap:1}}>
+                                  <span style={{fontSize:11,color:u.total_pnl>=0?'#00f564':'#ff2d78',fontWeight:700}}>
+                                    {u.total_pnl>=0?'+':''}{(u.total_pnl||0).toFixed(2)}U
+                                  </span>
+                                  <span style={{fontSize:9,color:'rgba(255,255,255,0.35)'}}>{u.total_trades}笔 胜率{u.win_rate}%</span>
+                                </div>
+                              ) : '—'}
+                            </td>
+                            <td style={{padding:'7px 10px'}}>
+                              <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                                <button onClick={()=>{setChangePwdTarget(u.username);setChangePwdVal('');setChangePwdMsg('');}} style={{fontSize:10,padding:'2px 7px',borderRadius:3,background:'rgba(0,245,255,0.08)',border:'1px solid rgba(0,245,255,0.3)',color:'var(--cyan)',cursor:'pointer'}}>改密码</button>
                                 <button onClick={async()=>{
                                   const days=prompt(`给 ${u.username} 续期多少天？`,30);
                                   if(!days||isNaN(+days)) return;
@@ -3429,14 +3473,21 @@ function App() {
                                   const d=await r.json();
                                   if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
                                   else showToast(`❌ ${d.msg}`,'error');
-                                }} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,100,0.08)',border:'1px solid rgba(0,245,100,0.3)',color:'var(--green)',cursor:'pointer'}}>续期</button>
+                                }} style={{fontSize:10,padding:'2px 7px',borderRadius:3,background:'rgba(0,245,100,0.08)',border:'1px solid rgba(0,245,100,0.3)',color:'var(--green)',cursor:'pointer'}}>续期</button>
                                 <button onClick={async()=>{
                                   if(!window.confirm(`确认${u.is_active?'封禁':'解封'} ${u.username}？`)) return;
                                   const r=await safeAuthFetch('/api/admin/toggle-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username})});
                                   const d=await r.json();
                                   if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
                                   else showToast(`❌ ${d.msg}`,'error');
-                                }} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:u.is_active?'rgba(255,45,120,0.08)':'rgba(0,245,100,0.08)',border:`1px solid ${u.is_active?'rgba(255,45,120,0.3)':'rgba(0,245,100,0.3)'}`,color:u.is_active?'var(--pink)':'var(--green)',cursor:'pointer'}}>{u.is_active?'封禁':'解封'}</button>
+                                }} style={{fontSize:10,padding:'2px 7px',borderRadius:3,background:u.is_active?'rgba(255,45,120,0.08)':'rgba(0,245,100,0.08)',border:`1px solid ${u.is_active?'rgba(255,45,120,0.3)':'rgba(0,245,100,0.3)'}`,color:u.is_active?'var(--pink)':'var(--green)',cursor:'pointer'}}>{u.is_active?'封禁':'解封'}</button>
+                                {u.logged_in && <button onClick={async()=>{
+                                  if(!window.confirm(`确认踢下线 ${u.username}？`)) return;
+                                  const r=await safeAuthFetch('/api/admin/kick-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username})});
+                                  const d=await r.json();
+                                  if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
+                                  else showToast(`❌ ${d.msg}`,'error');
+                                }} style={{fontSize:10,padding:'2px 7px',borderRadius:3,background:'rgba(255,100,0,0.08)',border:'1px solid rgba(255,100,0,0.3)',color:'#ff6400',cursor:'pointer'}}>踢下线</button>}
                               </div>
                             </td>
                           </tr>
