@@ -4,7 +4,15 @@ import './App.css';
 
 const _HOST   = process.env.REACT_APP_API_URL      || `${window.location.protocol}//${window.location.host}`;
 const _WS_HOST = _HOST.replace(/^https/, 'wss').replace(/^http/, 'ws');
-const _PREFIX  = process.env.REACT_APP_API_PREFIX   || '';
+
+// 运行时动态获取 prefix（后端每次重启 prefix 固定在 .env，前端通过 /cfg 获取）
+let _PREFIX = process.env.REACT_APP_API_PREFIX || '';
+export const prefixReady = _PREFIX
+  ? Promise.resolve()
+  : fetch(`${_HOST}/cfg`, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.ok ? r.json() : {})
+      .then(d => { _PREFIX = d.p || ''; })
+      .catch(() => {});
 
 function API(path) { return _PREFIX ? `${_HOST}/${_PREFIX}${path}` : `${_HOST}${path}`; }
 function WSU(path) { return _PREFIX ? `${_WS_HOST}/${_PREFIX}${path}` : `${_WS_HOST}${path}`; }
