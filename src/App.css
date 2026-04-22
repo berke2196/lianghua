@@ -592,7 +592,7 @@ select option { background:#0d0618; color:var(--text); }
 .dim    { color:var(--text-dim) !important; }
 
 /* ═══════════════════════════════════════
-   RESPONSIVE
+   RESPONSIVE — 平板 & 桌面
 ═══════════════════════════════════════ */
 @media (max-width: 1200px) {
   .dashboard-body { grid-template-columns:1fr; }
@@ -607,3 +607,133 @@ select option { background:#0d0618; color:var(--text); }
   .sidebar-left .nav-btn span:last-child { display:none; }
   .sidebar-right { display:none; }
 }
+
+/* ═══════════════════════════════════════
+   RESPONSIVE — 手机端（≤600px）
+═══════════════════════════════════════ */
+@media (max-width: 600px) {
+  /* ── 根字体缩小 ── */
+  html, body, #root { font-size: 12px; }
+
+  /* ── Header 压缩 ── */
+  .header { padding: 0 10px; height: 44px; }
+  .header-left h2 { font-size: 11px; letter-spacing: 1.5px; }
+  .header-divider { display: none; }
+  .header-status .badge { display: none; }
+  .header-status .status-label { display: none; }
+  .price-label { font-size: 11px; }
+  .header > div:last-child span[style] { font-size: 11px !important; }
+
+  /* ── 侧边栏隐藏，改为底部 Tab ── */
+  .sidebar-left  { display: none !important; }
+  .sidebar-right { display: none !important; }
+
+  /* ── 主内容区占满全宽，底部留底栏空间 ── */
+  .main-content  { flex-direction: column; }
+  .content-area  {
+    padding: 10px 10px 70px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ── 底部导航栏 ── */
+  .mobile-bottom-nav {
+    display: flex !important;
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
+    height: 58px;
+    background: linear-gradient(180deg, #0a0320 0%, #07020f 100%);
+    border-top: 1px solid rgba(0,245,255,0.2);
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.6);
+    padding: 0 4px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .mobile-tab-btn {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3px; border: none; background: transparent;
+    color: var(--text-dim); font-size: 9px; font-weight: 600;
+    letter-spacing: 0.3px; cursor: pointer;
+    transition: all 0.18s; padding: 6px 2px;
+    border-top: 2px solid transparent;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mobile-tab-btn .tab-icon { font-size: 18px; line-height: 1; }
+  .mobile-tab-btn.active {
+    color: var(--cyan);
+    border-top-color: var(--cyan);
+    text-shadow: 0 0 8px rgba(0,245,255,0.6);
+  }
+  .mobile-tab-btn:active { background: rgba(0,245,255,0.06); border-radius: 6px; }
+
+  /* ── dashboard 布局全垂直 ── */
+  .dashboard-body { grid-template-columns: 1fr; gap: 8px; }
+  .dashboard-mid  { grid-template-columns: 1fr; gap: 8px; }
+  .dashboard-left,
+  .dashboard-right { gap: 8px; }
+
+  /* ── stat-grid 改2列 ── */
+  .stat-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat-val  { font-size: 13px; }
+
+  /* ── 价格大字压缩 ── */
+  .price-display { font-size: 22px; }
+
+  /* ── 卡片内边距缩小 ── */
+  .card { padding: 10px 12px; }
+  .card h3 { font-size: 9px; margin-bottom: 8px; }
+
+  /* ── 表格横向滚动 ── */
+  .data-table { min-width: 520px; }
+  .positions-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .logs-table-container  { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── 按钮触摸区域放大 ── */
+  .btn-primary,
+  .btn-success,
+  .btn-danger { padding: 11px 16px; font-size: 12px; }
+  .nav-btn,
+  .mobile-tab-btn { min-height: 44px; }
+
+  /* ── 表单 ── */
+  .form-row-2 { grid-template-columns: 1fr; gap: 8px; }
+  .settings-form { max-width: 100%; }
+
+  /* ── 登录卡 ── */
+  .login-card { padding: 24px 16px; margin: 0 10px; }
+  .login-view { padding-top: 30px; }
+
+  /* ── toast 全宽 ── */
+  .toast {
+    left: 10px; right: 10px; top: 48px;
+    max-width: none;
+  }
+
+  /* ── summary-bar 换行 ── */
+  .summary-bar { gap: 10px; padding: 8px 10px; font-size: 10px; }
+
+  /* ── 指标面板自动换行 ── */
+  .ind-grid { gap: 4px; }
+  .ind-item { font-size: 10px; padding: 3px 7px; }
+
+  /* ── 交易记录行精简 ── */
+  .t-time  { width: 50px; font-size: 10px; }
+  .t-sym   { width: 28px; }
+  .t-pnl   { width: 48px; }
+
+  /* ── settings tab bar 横向滚动 ── */
+  .settings-tabs-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    padding-bottom: 4px;
+  }
+  .settings-tabs-wrap::-webkit-scrollbar { height: 2px; }
+
+  /* ── 图表全高 ── */
+  .chart-view { height: calc(100vh - 44px - 58px); }
+  .chart-toolbar { flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
+  .chart-sym-tabs { flex-wrap: wrap; }
+}
+
+/* ── 底部导航栏默认隐藏（桌面不显示）── */
+.mobile-bottom-nav { display: none; }

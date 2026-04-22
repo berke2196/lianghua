@@ -792,6 +792,26 @@ function App() {
         </div>
       )}
 
+      {/* ── 手机底部Tab导航栏（桌面CSS隐藏）── */}
+      {account.logged_in && (
+        <nav className="mobile-bottom-nav">
+          {[
+            { id:'dashboard', icon:'📊', label:'首页' },
+            { id:'analytics', icon:'📈', label:'分析' },
+            { id:'chart',     icon:'📉', label:'图表' },
+            { id:'positions', icon:'📋', label:'持仓' },
+            { id:'logs',      icon:'📝', label:'记录' },
+            { id:'settings',  icon:'⚙️', label:'设置' },
+          ].map(t => (
+            <button key={t.id} className={`mobile-tab-btn${view===t.id?' active':''}`}
+              onClick={() => _setView(t.id)}>
+              <span className="tab-icon">{t.icon}</span>
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+
       {/* 顶部栏 */}
       <div className="header">
         <div className="header-left">
@@ -2292,7 +2312,8 @@ function App() {
             <div className="settings-view">
               <h3>⚙️ HFT 策略设置</h3>
               {/* 设置子 Tab */}
-              <div style={{display:'flex',gap:3,marginBottom:14,background:'rgba(0,245,255,0.03)',borderRadius:6,padding:'3px',border:'1px solid rgba(0,245,255,0.1)',width:'fit-content'}}>
+              <div className="settings-tabs-wrap" style={{marginBottom:14}}>
+              <div style={{display:'inline-flex',gap:3,background:'rgba(0,245,255,0.03)',borderRadius:6,padding:'3px',border:'1px solid rgba(0,245,255,0.1)'}}>
                 {[['basic','⚙️ 基础'],['risk','🛡️ 风控'],['symbols','🌐 币种'],['advanced','🔬 高级'],['backtest','📊 回测']].map(([k,l])=>(
                   <button key={k} onClick={()=>setSettingsTab(k)}
                     style={{padding:'5px 14px',borderRadius:4,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,transition:'all .2s',
@@ -2300,6 +2321,7 @@ function App() {
                       color:settingsTab===k?'var(--cyan)':'var(--text-mid)',
                       boxShadow:settingsTab===k?'0 0 8px rgba(0,245,255,0.2)':'none'}}>{l}</button>
                 ))}
+              </div>
               </div>
 
               {/* ══ 基础 Tab ══ */}
