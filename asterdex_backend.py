@@ -2029,9 +2029,7 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
     _effective_cooldown = _REVERSE_COOLDOWN if (time.time() - _reverse_cd_ts < _REVERSE_COOLDOWN) else cooldown
     last_close = _cd_ps.get(symbol, 0)
     if time.time() - last_close < _effective_cooldown:
-        cooldown = _effective_cooldown  # 更新日志中显示的冷却时长
-    if time.time() - last_close < _effective_cooldown:
-        remaining = int(cooldown - (time.time() - last_close))
+        remaining = int(_effective_cooldown - (time.time() - last_close))
         last_cd_log = _cd_ps.get(f"{symbol}_log", 0)
         if time.time() - last_cd_log >= 15:
             _cd_ps[f"{symbol}_log"] = time.time()
@@ -2162,89 +2160,80 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                 asyncio.ensure_future(alerting.alert_spike_protection(symbol, _kline_close, cur_mkt, _dev, uid=uid))
             return
 
-    # ── 市价开仓（双层锁：全局持仓计数锁 + 币种锁，原子化防并发穿越）──
-    async with _get_open_pos_lock(uid):   # Fix2: 全局锁保证 open_count 检查+开仓原子化
+    # ── 市价开仓（双层锁嵌套持有：全局锁 ⊃ 币种锁，两锁同时持有直到 tracker.record）──
+    # 注意：必须嵌套持有，而不能先释放全局锁再等币种锁，否则两锁之间存在竞态窗口期
+    async with _get_open_pos_lock(uid):   # 全局锁
         # 全局锁内重新检查持仓数（此时其他币种协程无法并发通过此检查）
         _cur_open = len([p for p in _st.positions if abs(p.get("size", 0)) > 1e-9])
-        # 同时计入 pos_tracker（tracker 比 REST 同步更及时）
         _cur_open_tracker = len(get_pos_tracker(uid).entries)
         _real_open = max(_cur_open, _cur_open_tracker)
         if _real_open >= max_pos:
             logger.debug(f"🔒 {symbol} 全局锁内持仓数 {_real_open}/{max_pos}，跳过")
             return
-    async with _get_sym_lock(symbol, uid):
-        _pt_open = get_pos_tracker(uid)
-        # 加锁后再次检查持仓（防止并发等待锁期间已被其他协程开仓）
-        if symbol in _pt_open.entries:
-            logger.debug(f"🔒 {symbol} 锁内tracker已有持仓，跳过")
-            return
-        if any(p["symbol"] == symbol for p in _st.positions):
-            logger.debug(f"🔒 {symbol} 锁内positions已有持仓，跳过")
-            return
+        async with _get_sym_lock(symbol, uid):  # 嵌套币种锁，全局锁与币种锁同时持有直到开仓完成
+            _pt_open = get_pos_tracker(uid)
+            if symbol in _pt_open.entries:
+                logger.debug(f"🔒 {symbol} 锁内tracker已有持仓，跳过")
+                return
+            if any(p["symbol"] == symbol for p in _st.positions):
+                logger.debug(f"🔒 {symbol} 锁内positions已有持仓，跳过")
+                return
 
-        await set_leverage(symbol, int(leverage), user_id=uid)
+            await set_leverage(symbol, int(leverage), user_id=uid)
 
-        logger.info(f"📤 {symbol} 准备下单 side={side} sz={sz} trade_usd={trade_usd:.2f} lev={leverage}x")
-        result = await place_order(symbol, side, "MARKET", sz, user_id=uid)
-        if _order_ok(result):
-            sl_pct_cfg = sym_cfg.get("stop_loss_pct",  s.get("stop_loss_pct",  0.005))
-            tp_pct_cfg = sym_cfg.get("take_profit_pct", s.get("take_profit_pct", 0.008))
-            # 记录开仓时市场上下文（用于自动迭代分析）
-            klines_now = kline_cache.get(symbol, [])
-            highs_now  = [float(k[2]) for k in klines_now]
-            lows_now   = [float(k[3]) for k in klines_now]
-            closes_now = [float(k[4]) for k in klines_now]
-            adx_now = signal_engine._adx(highs_now, lows_now, closes_now) if len(klines_now) >= 30 else 0
-            atr_now = signal_engine._atr(highs_now, lows_now, closes_now) if len(klines_now) >= 15 else 0
-            # 杠杆被自动提升时，同比例放宽sl/tp，保持实际保证金风险恒定
-            # 原理：保证金损失 = trade_usd × sl_pct × leverage，leverage变大→sl_pct等比缩小保持乘积不变
-            if leverage > _user_leverage and _user_leverage > 0:
-                _lev_ratio = _user_leverage / leverage  # <1
-                # 止盈保持原始价格距离不变：高频交易依赖固定价格目标，拉长止盈会导致手续费侵蚀利润
-                # 止损按杠杆比例缩小：保证金损失=trade_usd×sl_pct×leverage，leverage变大→sl_pct等比缩小保持保证金风险恒定
-                sl_pct_use = round(sl_pct_cfg * _lev_ratio, 6)
-                tp_pct_use = tp_pct_cfg  # 止盈价格距离不变，保持高频交易盈利空间
-                logger.info(f"📐 {symbol} 杠杆提升{_user_leverage}x→{leverage}x，sl缩小保持保证金风险恒定，tp价格距离不变: "
-                            f"sl {sl_pct_cfg*100:.2f}%→{sl_pct_use*100:.2f}% tp {tp_pct_cfg*100:.2f}%（不变）")
-            else:
-                sl_pct_use = sl_pct_cfg
-                tp_pct_use = tp_pct_cfg
-            open_ctx = {
-                "adx": round(adx_now, 1),
-                "atr": round(atr_now, 6),
-                "confidence": round(confidence, 3),
-                "sl_pct": round(sl_pct_use, 5),
-                "tp_pct": round(tp_pct_use, 5),
-                "open_ts": time.time(),
-            }
-            _pt_open.record(symbol, side, price, sz,
-                sl_pct_use, tp_pct_use,
-                trailing=sym_cfg.get("trailing_stop", s.get("trailing_stop", True)),
-                open_ctx=open_ctx,
-                atr=atr_now)
-            logger.info(f"✅ 开仓 {side} {symbol} sz={sz} px≈{price:.4f} conf={confidence:.3f}")
-            _log_trade(symbol, side, price, sz, "crypto_hft", confidence, result, False, open_ctx=open_ctx, uid=uid)
-            await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                "text": f"✅ {side} {symbol} sz={sz} @ {price:.4f} conf={confidence*100:.1f}%"}, user_id=uid)
-            asyncio.create_task(alerting.alert_position_opened(symbol, side, price, sz, confidence, uid=uid))
-        else:
-            # 解析失败原因
-            err_msg = ""
-            if result:
-                err_msg = result.get("msg", result.get("message", str(result)))[:80]
-            else:
-                err_msg = "无响应/网络超时"
-            logger.warning(f"⚠️ 下单失败 {symbol}: {err_msg}")
-            # 失败订单不写历史记录，避免日志被刷爆
-            # 余额不足时停止自动交易
-            if "Margin is insufficient" in err_msg or "insufficient" in err_msg.lower():
-                _st.auto_trading = False
-                await broadcast("trading_status", {"active": False}, user_id=uid)
+            logger.info(f"📤 {symbol} 准备下单 side={side} sz={sz} trade_usd={trade_usd:.2f} lev={leverage}x")
+            result = await place_order(symbol, side, "MARKET", sz, user_id=uid)
+            if _order_ok(result):
+                sl_pct_cfg = sym_cfg.get("stop_loss_pct",  s.get("stop_loss_pct",  0.005))
+                tp_pct_cfg = sym_cfg.get("take_profit_pct", s.get("take_profit_pct", 0.008))
+                klines_now = kline_cache.get(symbol, [])
+                highs_now  = [float(k[2]) for k in klines_now]
+                lows_now   = [float(k[3]) for k in klines_now]
+                closes_now = [float(k[4]) for k in klines_now]
+                adx_now = signal_engine._adx(highs_now, lows_now, closes_now) if len(klines_now) >= 30 else 0
+                atr_now = signal_engine._atr(highs_now, lows_now, closes_now) if len(klines_now) >= 15 else 0
+                if leverage > _user_leverage and _user_leverage > 0:
+                    _lev_ratio = _user_leverage / leverage
+                    sl_pct_use = round(sl_pct_cfg * _lev_ratio, 6)
+                    tp_pct_use = tp_pct_cfg
+                    logger.info(f"📐 {symbol} 杠杆提升{_user_leverage}x→{leverage}x，sl缩小保持保证金风险恒定，tp价格距离不变: "
+                                f"sl {sl_pct_cfg*100:.2f}%→{sl_pct_use*100:.2f}% tp {tp_pct_cfg*100:.2f}%（不变）")
+                else:
+                    sl_pct_use = sl_pct_cfg
+                    tp_pct_use = tp_pct_cfg
+                open_ctx = {
+                    "adx": round(adx_now, 1),
+                    "atr": round(atr_now, 6),
+                    "confidence": round(confidence, 3),
+                    "sl_pct": round(sl_pct_use, 5),
+                    "tp_pct": round(tp_pct_use, 5),
+                    "open_ts": time.time(),
+                }
+                _pt_open.record(symbol, side, price, sz,
+                    sl_pct_use, tp_pct_use,
+                    trailing=sym_cfg.get("trailing_stop", s.get("trailing_stop", True)),
+                    open_ctx=open_ctx,
+                    atr=atr_now)
+                logger.info(f"✅ 开仓 {side} {symbol} sz={sz} px≈{price:.4f} conf={confidence:.3f}")
+                _log_trade(symbol, side, price, sz, "crypto_hft", confidence, result, False, open_ctx=open_ctx, uid=uid)
                 await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                    "text": f"⛔ {symbol} 保证金不足，自动停止交易！请充值后手动重启。"}, user_id=uid)
+                    "text": f"✅ {side} {symbol} sz={sz} @ {price:.4f} conf={confidence*100:.1f}%"}, user_id=uid)
+                asyncio.create_task(alerting.alert_position_opened(symbol, side, price, sz, confidence, uid=uid))
             else:
-                await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                    "text": f"❌ {symbol} 下单失败({side}): {err_msg}"}, user_id=uid)
+                err_msg = ""
+                if result:
+                    err_msg = result.get("msg", result.get("message", str(result)))[:80]
+                else:
+                    err_msg = "无响应/网络超时"
+                logger.warning(f"⚠️ 下单失败 {symbol}: {err_msg}")
+                if "Margin is insufficient" in err_msg or "insufficient" in err_msg.lower():
+                    _st.auto_trading = False
+                    await broadcast("trading_status", {"active": False}, user_id=uid)
+                    await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
+                        "text": f"⛔ {symbol} 保证金不足，自动停止交易！请充值后手动重启。"}, user_id=uid)
+                else:
+                    await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
+                        "text": f"❌ {symbol} 下单失败({side}): {err_msg}"}, user_id=uid)
 
 # ─────────────────────────────────────────────
 # 自动迭代优化引擎
