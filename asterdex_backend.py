@@ -3225,6 +3225,164 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
         "equity_curve": equity_curve_slim,
     }
 
+# ─────────────────────────────────────────────
+# 回测核心计算（可复用）
+# ─────────────────────────────────────────────
+def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, leverage: int) -> dict:
+    """对给定K线数据和参数跑一次回测，返回统计摘要（不含equity_curve/trades详情）"""
+    FEE = 0.0005
+    sl_pct  = cfg["stop_loss_pct"]
+    tp_pct  = cfg["take_profit_pct"]
+    trades       = []
+    equity       = 0.0
+    position     = None
+    max_equity   = None
+    max_drawdown = 0.0
+
+    for i in range(65, len(data)):
+        window = data[:i+1]
+        candle = data[i]
+        hi     = float(candle[2]); lo = float(candle[3]); close = float(candle[4])
+
+        if position:
+            exit_price = exit_reason = None
+            if position["side"] == "BUY":
+                if lo <= position["sl"]:  exit_price=position["sl"];  exit_reason="止损"
+                elif hi >= position["tp"]: exit_price=position["tp"]; exit_reason="止盈"
+            else:
+                if hi >= position["sl"]:  exit_price=position["sl"];  exit_reason="止损"
+                elif lo <= position["tp"]: exit_price=position["tp"]; exit_reason="止盈"
+            if exit_price:
+                sz=position["sz"]; entry=position["entry"]
+                gross=(exit_price-entry)*sz if position["side"]=="BUY" else (entry-exit_price)*sz
+                fee=sz*entry*FEE+sz*exit_price*FEE
+                pnl=round(gross-fee,4)
+                equity=round(equity+pnl,4)
+                trades.append(pnl)
+                if max_equity is None or equity>max_equity: max_equity=equity
+                dd=max_equity-equity; max_drawdown=max(max_drawdown,dd)
+                position=None
+            continue
+
+        side,conf,_ = signal_engine.compute(window, sym_short)
+        if side=="HOLD" or conf<cfg["min_confidence"]: continue
+        if side=="BUY"  and not cfg.get("enable_long",  True): continue
+        if side=="SELL" and not cfg.get("enable_short", True): continue
+        net_tp=tp_pct-2*FEE; net_sl=sl_pct+2*FEE
+        rr_needed={"conservative":1.8,"balanced":1.0,"aggressive":0.2,"turbo":0.15}.get(cfg.get("hft_mode","balanced"),1.0)
+        if net_sl>0 and (net_tp/net_sl)<rr_needed: continue
+        sz=trade_size_usd*leverage/close
+        sl=close*(1-sl_pct) if side=="BUY" else close*(1+sl_pct)
+        tp=close*(1+tp_pct) if side=="BUY" else close*(1-tp_pct)
+        position={"side":side,"entry":close,"sz":sz,"sl":sl,"tp":tp}
+
+    if position:  # 强平
+        last=float(data[-1][4]); sz=position["sz"]; entry=position["entry"]
+        gross=(last-entry)*sz if position["side"]=="BUY" else (entry-last)*sz
+        fee=sz*entry*FEE+sz*last*FEE
+        trades.append(round(gross-fee,4))
+        equity=round(equity+trades[-1],4)
+
+    total=len(trades); wins=sum(1 for p in trades if p>0); losses=total-wins
+    win_pnl=sum(p for p in trades if p>0); loss_pnl=abs(sum(p for p in trades if p<=0))
+    profit_factor=round(win_pnl/loss_pnl,2) if loss_pnl>0 else (99.0 if wins>0 else 0.0)
+    score = profit_factor * (wins/total if total>0 else 0) - max_drawdown * 0.1  # 综合评分
+    return {
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(wins/total*100,1) if total>0 else 0,
+        "total_pnl": round(sum(trades),4),
+        "profit_factor": profit_factor,
+        "max_drawdown": round(max_drawdown,4),
+        "score": round(score,4),
+    }
+
+@app.post(R("/api/backtest/optimize"))
+async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_user)):
+    """
+    参数网格搜索：对多组 stop_loss / take_profit / min_confidence / hft_mode 组合跑回测，
+    找出综合评分最高的参数组合并返回推荐，支持一键应用。
+    """
+    uid = int(user["sub"]); st = get_user_state(uid)
+    limit = min(int(req.limit), 3000)
+    data = await aster_get("/fapi/v3/klines",
+        {"symbol": req.symbol, "interval": req.interval, "limit": limit}, user_id=uid)
+    if not data or not isinstance(data,list) or len(data)<65:
+        return JSONResponse({"ok":False,"error":f"K线数据不足: {len(data) if data else 0}根"}, status_code=400)
+
+    sym_short = req.symbol.replace("USDT","")
+
+    # 搜索空间（4×4×3×2 = 96 种组合）
+    sl_list   = [0.003, 0.005, 0.008, 0.012]
+    tp_list   = [0.006, 0.010, 0.015, 0.020]
+    conf_list = [0.60,  0.65,  0.70]
+    mode_list = ["balanced", "aggressive"]
+
+    results = []
+    for sl in sl_list:
+        for tp in tp_list:
+            if tp <= sl: continue          # 止盈必须大于止损
+            for conf in conf_list:
+                for mode in mode_list:
+                    cfg = {
+                        "stop_loss_pct":   sl,
+                        "take_profit_pct": tp,
+                        "min_confidence":  conf,
+                        "hft_mode":        mode,
+                        "enable_long":     req.enable_long,
+                        "enable_short":    req.enable_short,
+                    }
+                    stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
+                    if stats["total_trades"] >= 3:  # 至少3笔才计入
+                        results.append({**cfg, **stats})
+
+    if not results:
+        return {"ok":False,"error":"所有参数组合交易次数不足（<3笔），请切换更短周期或更多K线数量"}
+
+    # 按综合评分排序
+    results.sort(key=lambda x: x["score"], reverse=True)
+    best = results[0]
+    top3 = results[:3]
+
+    # 当前参数的回测成绩（对比用）
+    current_cfg = {
+        "stop_loss_pct":   req.stop_loss_pct,
+        "take_profit_pct": req.take_profit_pct,
+        "min_confidence":  req.min_confidence,
+        "hft_mode":        req.hft_mode,
+        "enable_long":     req.enable_long,
+        "enable_short":    req.enable_short,
+    }
+    current_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage)
+
+    return {
+        "ok":            True,
+        "symbol":        req.symbol,
+        "interval":      req.interval,
+        "bars":          len(data),
+        "tested":        len(results),
+        "best":          best,
+        "top3":          top3,
+        "current_stats": {**current_cfg, **current_stats},
+    }
+
+@app.post(R("/api/backtest/apply"))
+async def backtest_apply_params(body: dict, user=Depends(get_current_user)):
+    """将回测推荐参数直接写入用户策略设置"""
+    uid = int(user["sub"]); st = get_user_state(uid)
+    apply_keys = ["stop_loss_pct","take_profit_pct","min_confidence","hft_mode"]
+    updated = {}
+    for k in apply_keys:
+        if k in body:
+            st.settings[k] = body[k]
+            updated[k] = body[k]
+    if not updated:
+        return {"ok":False,"error":"无有效参数"}
+    save_user_settings(uid, st.settings, st.perf)
+    await broadcast("settings_updated", st.settings, user_id=uid)
+    return {"ok":True,"applied":updated}
+
 @app.post(R("/api/trading/close_position"))
 async def api_close_position(body: dict, user=Depends(get_current_user)):
     uid = int(user["sub"]); st = get_user_state(uid)
