@@ -46,59 +46,6 @@
 
 ---
 
-## 🗂️ 项目结构
-
-```
-asterdex-hft/
-├── asterdex_backend.py   # 核心后端（FastAPI + 信号引擎 + HFT循环）
-├── db.py                 # 数据库（SQLite，用户/授权码/日志）
-├── auth.py               # JWT 认证模块
-├── security.py           # 私钥 Fernet 加密
-├── alerting.py           # Telegram 通知
-├── run.py                # 后端启动入口（uvicorn）
-├── watchdog.py           # 崩溃自动重启守护进程
-├── requirements.txt      # Python 依赖
-├── src/App.js            # 前端 React 主文件（单文件全功能）
-├── public/               # 静态资源
-└── 搭建教程.md           # 完整部署教程
-```
-
----
-
-## 🚀 快速开始
-
-### 环境要求
-
-| 依赖 | 版本 |
-|------|------|
-| Python | 3.10+ |
-| Node.js | 18+ |
-
-### 安装 & 启动
-
-```bash
-# 1. 克隆
-git clone https://github.com/berke2196/lianghua.git
-cd lianghua
-
-# 2. 安装依赖
-pip install -r requirements.txt
-npm install
-
-# 3. 初始化数据库
-python -c "from db import init_db; init_db()"
-
-# 4. 启动后端
-python run.py
-
-# 5. 启动前端（另开终端）
-npm start
-```
-
-访问 `http://localhost:3000`
-
----
-
 ## 🏗️ 技术栈
 
 **后端**
@@ -159,6 +106,7 @@ npm start
 
 ---
 
-## 📖 详细部署教程
+## � 联系 & 使用授权
 
-见 [搭建教程.md](./搭建教程.md)
+本系统为**私有商业软件**，需授权码激活后方可使用。  
+如需购买授权或了解详情，请联系作者。
