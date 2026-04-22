@@ -526,6 +526,37 @@ def _circuit_record(key: str, success: bool, uid: int = 0):
             c["open_until"] = time.time() + _CIRCUIT_TIMEOUT
             logger.warning(f"⚡ 熔断器开启 uid={uid}: {key}，{_CIRCUIT_TIMEOUT}s后自动重试")
 
+async def fetch_klines_for_backtest(symbol: str, interval: str, limit: int) -> Optional[list]:
+    """回测专用K线拉取：绕开熔断器，直连公开接口，超时15s"""
+    url = f"{ASTER_BASE}/fapi/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    s = _get_session()
+    for attempt in range(3):
+        try:
+            async with s.get(url, params=params, headers=_HEADERS,
+                             timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
+                    logger.warning(f"回测K线返回非列表: {str(data)[:200]}")
+                    return None
+                txt = await r.text()
+                logger.warning(f"回测K线 {symbol} {interval} -> HTTP {r.status}: {txt[:200]}")
+                if r.status in (429, 503) and attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return None
+        except asyncio.TimeoutError:
+            logger.warning(f"回测K线超时({attempt+1}/3) {symbol}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning(f"回测K线异常({attempt+1}/3) {symbol}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+    return None
+
 async def aster_get(path: str, params: dict = None, auth: bool = False, user_id: int = 0) -> Optional[dict]:
     from security import get_user_key
     base_url = ASTER_BASE + path
@@ -3081,11 +3112,9 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
 
     # 拉取历史K线（最多3000根，防止超时）
     limit = min(int(req.limit), 3000)
-    data = await aster_get("/fapi/v3/klines",
-        {"symbol": req.symbol, "interval": req.interval, "limit": limit},
-        user_id=uid)
-    if not data or not isinstance(data, list) or len(data) < 65:
-        return JSONResponse({"ok": False, "error": f"K线数据不足: {len(data) if data else 0}根，需要≥65根"}, status_code=400)
+    data = await fetch_klines_for_backtest(req.symbol, req.interval, limit)
+    if not data or len(data) < 65:
+        return JSONResponse({"ok": False, "error": f"K线数据获取失败或不足: {len(data) if data else 0}根，需要≥65根。请检查交易对是否正确。"}, status_code=400)
 
     sym_short = req.symbol.replace("USDT", "")
     sim_cfg = {
@@ -3287,10 +3316,9 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
     """
     uid = int(user["sub"])
     limit = min(int(req.limit), 3000)
-    data = await aster_get("/fapi/v3/klines",
-        {"symbol": req.symbol, "interval": req.interval, "limit": limit}, user_id=uid)
-    if not data or not isinstance(data,list) or len(data)<65:
-        return JSONResponse({"ok":False,"error":f"K线数据不足: {len(data) if data else 0}根"}, status_code=400)
+    data = await fetch_klines_for_backtest(req.symbol, req.interval, limit)
+    if not data or len(data) < 65:
+        return JSONResponse({"ok":False,"error":f"K线数据获取失败或不足: {len(data) if data else 0}根。请检查交易对是否正确。"}, status_code=400)
 
     sym_short = req.symbol.replace("USDT","")
 
