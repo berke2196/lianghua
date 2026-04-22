@@ -690,7 +690,11 @@ function App() {
   };
 
   const handleLogout = async () => {
-    await authFetch('/api/auth/logout', { method: 'POST' });
+    try { await authFetch('/api/auth/logout', { method: 'POST' }); } catch {}
+    localStorage.removeItem('jwt_token');
+    localStorage.removeItem('auth_user');
+    localStorage.removeItem('is_admin');
+    setJwtToken(''); setAuthUser(''); setIsAdmin(false);
     setAccount({ logged_in: false, balance: 0, available: 0, positions: [], open_orders: [] });
     setIsTrading(false);
     setTradeLogs([]);
@@ -699,7 +703,7 @@ function App() {
     setMultiIndicators({});
     multiIndicatorsRef.current = {};
     setLiveLog([]);
-    _setView('login');
+    _setView('auth');
     showToast('已登出', 'info');
   };
 
