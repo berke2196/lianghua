@@ -1466,7 +1466,10 @@ class CryptoHFTEngine:
         di_plus  = [100*p/a if a>0 else 0 for p,a in zip(p14, atr14)]
         di_minus = [100*m/a if a>0 else 0 for m,a in zip(m14, atr14)]
         dx = [abs(p-m)/(p+m+1e-9)*100 for p,m in zip(di_plus, di_minus)]
-        adx_val = sum(dx[-n:]) / n if len(dx) >= n else sum(dx) / max(len(dx), 1)
+        if len(dx) < n: return round(sum(dx)/max(len(dx),1), 2)
+        # 标准ADX：对DX序列再做一次Wilder平滑（与TradingView一致）
+        adx_val = sum(dx[:n]) / n
+        for x in dx[n:]: adx_val = (adx_val * (n - 1) + x) / n
         return round(adx_val, 2)
 
     def compute(self, klines: list, sym_short: str, orderbooks: dict = None) -> tuple:
@@ -1625,7 +1628,7 @@ class CryptoHFTEngine:
             else:
                 return "HOLD", 0.0, f"ADX{adx_v:.1f}<{adx_min}，震荡不开仓({mode})"
 
-        # 趋势行情：ranging时按模式打折置信度
+        # 弱趋势/ADX边界：_market==ranging时按模式打折置信度，降低震荡期误判
         if scores.get("_market") == "ranging":
             conf = round(conf * ranging_disc, 4)
 
@@ -2225,12 +2228,13 @@ def _eval_params(trades: list, conf_thresh: float, sl: float, tp: float):
     filtered = [t for t in trades if float(t.get("open_conf", 0)) >= conf_thresh]
     if not filtered:
         return None
-    wins  = sum(1 for t in filtered if float(t.get("pnl", 0)) > 0)
-    total = len([t for t in filtered if float(t.get("pnl", 0)) != 0])
+    closed_filtered = [t for t in filtered if float(t.get("pnl", 0)) != 0]
+    total = len(closed_filtered)
     if total == 0:
         return None
+    wins  = sum(1 for t in closed_filtered if float(t.get("pnl", 0)) > 0)
     win_rate = wins / total
-    avg_pnl  = sum(float(t.get("pnl", 0)) for t in filtered) / total
+    avg_pnl  = sum(float(t.get("pnl", 0)) for t in closed_filtered) / total
     score    = avg_pnl * win_rate * 100
     return {"score": score, "win_rate": win_rate, "avg_pnl": avg_pnl, "total": total, "rr": rr}
 

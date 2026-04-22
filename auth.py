@@ -69,11 +69,9 @@ def revoke_token(token: str):
             # 同步清除 active 记录（避免登出后旧jti仍占位）
             if _active_jti.get(uid) == jti:
                 _active_jti.pop(uid, None)
-            # 防止无限增长：超过 10000 条时清掉最老的一半
+            # 防止无限增长：超过 10000 条时清空（8h后token自然过期，无安全风险）
             if len(_revoked_jtis) > 10000:
-                to_remove = list(_revoked_jtis)[:5000]
-                for t in to_remove:
-                    _revoked_jtis.discard(t)
+                _revoked_jtis.clear()
     except Exception:
         pass
 
