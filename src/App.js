@@ -130,13 +130,19 @@ function App() {
         // 同步到本地 settings state，然后自动持久化保存
         setSettings(p => {
           const next = {...p, ...fullParams};
+          // 同步到当前选中币种的独立设置（如有）
+          const targetSym = btForm.symbol || p.symbol || 'BTCUSDT';
+          const nextSymSettings = {...symbolSettings};
+          if (nextSymSettings[targetSym]) {
+            nextSymSettings[targetSym] = {...nextSymSettings[targetSym], ...fullParams};
+          }
           // 异步触发 /api/settings 持久化（用最新 next 构造 payload）
           const { symbol_settings: _drop, ...globalOnly } = next;
           safeAuthFetch('/api/settings', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({...globalOnly, symbol_settings: symbolSettings}),
+            body: JSON.stringify({...globalOnly, symbol_settings: nextSymSettings}),
           }).then(r2 => r2.json()).then(d2 => {
-            if (d2.ok) showToast('✅ 回测参数已应用并保存（策略/金额/杠杆/方向）','success');
+            if (d2.ok) showToast('✅ 回测参数已应用并保存（策略/金额/杠杆/方向/币种）','success');
             else showToast(`⚠️ 参数已应用，但保存失败: ${d2.error||''}`, 'warn');
           }).catch(()=>showToast('⚠️ 参数已应用，但保存请求失败','warn'));
           return next;
@@ -3201,7 +3207,17 @@ function App() {
                         {btError && <div className="alert alert-error" style={{marginTop:8}}>{btError}</div>}
                         {btResult && (
                           <div style={{marginTop:12}}>
-                            <div style={{fontSize:10,color:'var(--text-dim)',marginBottom:8}}>{btResult.symbol} · {btResult.interval} · 共 {btResult.bars} 根K线</div>
+                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                              <span style={{fontSize:10,color:'var(--text-dim)'}}>{btResult.symbol} · {btResult.interval} · 共 {btResult.bars} 根K线 · {btForm.trade_size_usd}U×{btForm.leverage}x</span>
+                              <button onClick={()=>applyBtParams({
+                                stop_loss_pct:btForm.stop_loss_pct,take_profit_pct:btForm.take_profit_pct,
+                                min_confidence:btForm.min_confidence,hft_mode:btForm.hft_mode
+                              })} disabled={btApplying}
+                                style={{padding:'4px 14px',borderRadius:4,border:'none',cursor:'pointer',fontWeight:700,fontSize:11,
+                                  background:'linear-gradient(135deg,#00f5ff,#0064ff)',color:'#000'}}>
+                                {btApplying?'应用中...':'⚡ 一键应用'}
+                              </button>
+                            </div>
                             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,marginBottom:10}}>
                               {[
                                 {l:'总盈亏',v:`${btResult.total_pnl>=0?'+':''}${btResult.total_pnl}U`,c:btResult.total_pnl>=0?'var(--cyan)':'var(--pink)'},
