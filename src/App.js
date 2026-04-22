@@ -77,12 +77,12 @@ function App() {
   const [optResult, setOptResult] = useState(null);
   const [optLoading, setOptLoading] = useState(false);
   // 回测
-  const [btForm, setBtForm] = useState({
+  const [btForm, setBtForm] = useState(() => ({
     symbol:'BTCUSDT', interval:'1m', limit:1000,
     min_confidence:0.65, stop_loss_pct:0.005, take_profit_pct:0.008,
     hft_mode:'balanced', enable_long:true, enable_short:true,
     trade_size_usd:10, leverage:5,
-  });
+  }));
   const [btLoading, setBtLoading] = useState(false);
   const [btResult,  setBtResult]  = useState(null);
   const [btError,   setBtError]   = useState('');
@@ -110,14 +110,37 @@ function App() {
     } catch(e) { setBtOptError(e.message); }
     finally { setBtOptLoading(false); }
   };
-  const applyBtParams = async (params) => {
+  const applyBtParams = async (strategyParams) => {
     setBtApplying(true);
     try {
-      const r = await safeAuthFetch('/api/backtest/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
+      // 合并回测表单中的金额/杠杆/方向，与策略参数一起写入
+      const fullParams = {
+        ...strategyParams,
+        trade_size_usd: btForm.trade_size_usd,
+        leverage:       btForm.leverage,
+        enable_long:    btForm.enable_long,
+        enable_short:   btForm.enable_short,
+        // 同步 trade_direction 字段
+        trade_direction: btForm.enable_long && btForm.enable_short ? 'both'
+                       : btForm.enable_long ? 'long' : 'short',
+      };
+      const r = await safeAuthFetch('/api/backtest/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(fullParams)});
       const d = await r.json();
       if (d.ok) {
-        setSettings(p => ({...p, ...params}));
-        showToast('✅ 推荐参数已应用到策略设置，记得保存！','success');
+        // 同步到本地 settings state，然后自动持久化保存
+        setSettings(p => {
+          const next = {...p, ...fullParams};
+          // 异步触发 /api/settings 持久化（用最新 next 构造 payload）
+          const { symbol_settings: _drop, ...globalOnly } = next;
+          safeAuthFetch('/api/settings', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({...globalOnly, symbol_settings: symbolSettings}),
+          }).then(r2 => r2.json()).then(d2 => {
+            if (d2.ok) showToast('✅ 回测参数已应用并保存（策略/金额/杠杆/方向）','success');
+            else showToast(`⚠️ 参数已应用，但保存失败: ${d2.error||''}`, 'warn');
+          }).catch(()=>showToast('⚠️ 参数已应用，但保存请求失败','warn'));
+          return next;
+        });
       } else showToast(`❌ ${d.error}`,'error');
     } catch(e) { showToast(`应用失败: ${e.message}`,'error'); }
     finally { setBtApplying(false); }
@@ -407,6 +430,14 @@ function App() {
               const { symbol_settings: ss, ...globalOnly } = data.settings;
               setSettings(prev => ({ ...prev, ...globalOnly }));
               if (ss) setSymbolSettings(ss);
+              // 同步回测表单的金额/杠杆/方向，与实际配置保持一致
+              setBtForm(prev => ({
+                ...prev,
+                trade_size_usd: globalOnly.trade_size_usd ?? prev.trade_size_usd,
+                leverage:       globalOnly.leverage       ?? prev.leverage,
+                enable_long:    globalOnly.enable_long    ?? prev.enable_long,
+                enable_short:   globalOnly.enable_short   ?? prev.enable_short,
+              }));
             }
             if (data.trade_logs)  setTradeLogs(data.trade_logs);
             if (data.auto_trading != null) setIsTrading(data.auto_trading);
@@ -2984,8 +3015,8 @@ function App() {
                       <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:12}}>
                         自动测试 <b style={{color:'var(--cyan)'}}>96种</b> 参数组合（止损/止盈/置信度/模式），找出历史最优策略参数，一键应用
                       </div>
-                      {/* 精简参数：只需选币种+周期+K线数 */}
-                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:12}}>
+                      {/* 回测参数：K线设置 + 金额风控 + 方向 */}
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}}>
                         <div className="form-group" style={{marginBottom:0}}>
                           <label style={{fontSize:10}}>交易对</label>
                           <select value={btForm.symbol} onChange={e=>setBtForm(p=>({...p,symbol:e.target.value}))}>
@@ -3005,6 +3036,31 @@ function App() {
                           <label style={{fontSize:10}}>K线数量</label>
                           <input type="number" min="200" max="3000" value={btForm.limit}
                             onChange={e=>setBtForm(p=>({...p,limit:+e.target.value}))} />
+                        </div>
+                      </div>
+                      {/* 金额 / 杠杆 / 方向 — 应用时同步到风控+基础设置 */}
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8,padding:'8px 10px',background:'rgba(0,245,255,0.03)',borderRadius:6,border:'1px solid rgba(0,245,255,0.1)'}}>
+                        <div className="form-group" style={{marginBottom:0}}>
+                          <label style={{fontSize:10}}>每笔金额 (U) <span style={{color:'var(--yellow)',fontSize:9}}>↓应用时同步</span></label>
+                          <input type="number" min="1" max="10000" step="1" value={btForm.trade_size_usd}
+                            onChange={e=>setBtForm(p=>({...p,trade_size_usd:+e.target.value}))} />
+                        </div>
+                        <div className="form-group" style={{marginBottom:0}}>
+                          <label style={{fontSize:10}}>杠杆倍数 <span style={{color:'var(--yellow)',fontSize:9}}>↓应用时同步</span></label>
+                          <input type="number" min="1" max="125" step="1" value={btForm.leverage}
+                            onChange={e=>setBtForm(p=>({...p,leverage:+e.target.value}))} />
+                        </div>
+                        <div className="form-group" style={{marginBottom:0}}>
+                          <label style={{fontSize:10}}>开仓方向 <span style={{color:'var(--yellow)',fontSize:9}}>↓应用时同步</span></label>
+                          <select value={btForm.enable_long && btForm.enable_short ? 'both' : btForm.enable_long ? 'long' : 'short'}
+                            onChange={e=>{
+                              const v=e.target.value;
+                              setBtForm(p=>({...p,enable_long:v==='long'||v==='both',enable_short:v==='short'||v==='both'}));
+                            }}>
+                            <option value="both">做多+做空</option>
+                            <option value="long">仅做多</option>
+                            <option value="short">仅做空</option>
+                          </select>
                         </div>
                       </div>
                       <button onClick={runBtOptimize} disabled={btOptLoading}

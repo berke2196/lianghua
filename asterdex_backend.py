@@ -3492,7 +3492,11 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
 async def backtest_apply_params(body: dict, user=Depends(get_current_user)):
     """将回测推荐参数直接写入用户策略设置"""
     uid = int(user["sub"]); st = get_user_state(uid)
-    apply_keys = ["stop_loss_pct","take_profit_pct","min_confidence","hft_mode"]
+    apply_keys = [
+        "stop_loss_pct", "take_profit_pct", "min_confidence", "hft_mode",
+        "trade_size_usd", "leverage",
+        "enable_long", "enable_short", "trade_direction",
+    ]
     updated = {}
     for k in apply_keys:
         if k in body:
