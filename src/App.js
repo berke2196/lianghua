@@ -600,6 +600,9 @@ function App() {
     setTradingLoading(true);
     try {
       const { symbol_settings: _drop2, ...globalOnly2 } = settings;
+      const dir2 = globalOnly2.trade_direction || 'both';
+      globalOnly2.enable_long  = dir2 === 'long'  || dir2 === 'both';
+      globalOnly2.enable_short = dir2 === 'short' || dir2 === 'both';
       const payload = { ...globalOnly2, symbol_settings: symbolSettings };
       const sr = await authFetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
       if (!sr.ok) { showToast('❌ 设置保存失败，请重试', 'error'); return; }
