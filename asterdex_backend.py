@@ -3196,6 +3196,8 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
 
     def _do_backtest():
         """CPU密集循环，通过run_in_executor卸到线程池"""
+        # 预计算全量信号，避免每根K线重复计算所有指标（O(N²)→O(N)）
+        _signals = _precompute_signals(data, sym_short)
         trades       = []
         equity_curve = []
         equity       = 0.0
@@ -3204,7 +3206,6 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
         max_drawdown = 0.0
 
         for i in range(65, len(data)):
-            window = data[:i+1]
             candle = data[i]
             hi     = float(candle[2])
             lo     = float(candle[3])
@@ -3246,8 +3247,8 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
                     equity_curve.append({"ts": ts_str, "equity": equity})
                 continue
 
-            # ── 无持仓：跑信号 ──
-            side, conf, _ = signal_engine.compute(window, sym_short)
+            # ── 无持仓：查预计算信号 ──
+            side, conf = _signals[i]
             if side == "HOLD" or conf < sim_cfg["min_confidence"]:
                 equity_curve.append({"ts": ts_str, "equity": equity}); continue
             if side == "BUY"  and not sim_cfg.get("enable_long",  True):
@@ -3314,8 +3315,24 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
 # ─────────────────────────────────────────────
 # 回测核心计算（可复用）
 # ─────────────────────────────────────────────
-def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, leverage: int) -> dict:
-    """对给定K线数据和参数跑一次回测，返回统计摘要（不含equity_curve/trades详情）"""
+def _precompute_signals(data: list, sym_short: str) -> list:
+    """
+    预计算全量信号数组，每个 bar 只算一次，供所有参数组合复用。
+    返回 list[(side, conf)]，长度 == len(data)，前 65 个为 ("HOLD", 0.0)。
+    把回测信号计算从 O(N²) 降为 O(N)。
+    """
+    signals = [("HOLD", 0.0)] * len(data)
+    for i in range(65, len(data)):
+        side, conf, _ = signal_engine.compute(data[:i+1], sym_short)
+        signals[i] = (side, conf)
+    return signals
+
+
+def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, leverage: int,
+                 signals: list = None) -> dict:
+    """对给定K线数据和参数跑一次回测，返回统计摘要（不含equity_curve/trades详情）。
+    signals: 预计算的信号数组（由 _precompute_signals 生成），传入时直接查表跳过重复计算。
+    """
     FEE = 0.0005
     sl_pct  = cfg["stop_loss_pct"]
     tp_pct  = cfg["take_profit_pct"]
@@ -3324,9 +3341,11 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
     position     = None
     max_equity   = None
     max_drawdown = 0.0
+    rr_needed = {"conservative":1.8,"balanced":1.0,"aggressive":0.2,"turbo":0.15}.get(cfg.get("hft_mode","balanced"),1.0)
+    net_tp = tp_pct - 2*FEE; net_sl = sl_pct + 2*FEE
+    rr_ok = net_sl <= 0 or (net_tp / net_sl) >= rr_needed  # 盈亏比预判，不满足则整组跳过
 
     for i in range(65, len(data)):
-        window = data[:i+1]
         candle = data[i]
         hi     = float(candle[2]); lo = float(candle[3]); close = float(candle[4])
 
@@ -3350,26 +3369,27 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                 if max_equity is None or equity>max_equity: max_equity=equity
                 position=None
             else:
-                # 持仓浮亏也计入max_drawdown
                 float_pnl=(close-position["entry"])*position["sz"] if position["side"]=="BUY" else (position["entry"]-close)*position["sz"]
                 float_eq=equity+float_pnl
                 if max_equity is not None: max_drawdown=max(max_drawdown,max_equity-float_eq)
             continue
 
-        side,conf,_ = signal_engine.compute(window, sym_short)
+        if not rr_ok: continue  # 整组参数盈亏比不达标，跳过开仓
+        # 优先使用预计算信号，没有时降级实时计算（兼容普通回测路径）
+        if signals is not None:
+            side, conf = signals[i]
+        else:
+            side, conf, _ = signal_engine.compute(data[:i+1], sym_short)
         if side=="HOLD" or conf<cfg["min_confidence"]: continue
         if side=="BUY"  and not cfg.get("enable_long",  True): continue
         if side=="SELL" and not cfg.get("enable_short", True): continue
-        net_tp=tp_pct-2*FEE; net_sl=sl_pct+2*FEE
-        rr_needed={"conservative":1.8,"balanced":1.0,"aggressive":0.2,"turbo":0.15}.get(cfg.get("hft_mode","balanced"),1.0)
-        if net_sl>0 and (net_tp/net_sl)<rr_needed: continue
         sz=trade_size_usd*leverage/close
         sl=close*(1-sl_pct) if side=="BUY" else close*(1+sl_pct)
         tp=close*(1+tp_pct) if side=="BUY" else close*(1-tp_pct)
         position={"side":side,"entry":close,"sz":sz,"sl":sl,"tp":tp}
-        continue  # 开仓当根不检查止损
+        continue
 
-    if position:  # 强平
+    if position:
         last=float(data[-1][4]); sz=position["sz"]; entry=position["entry"]
         gross=(last-entry)*sz if position["side"]=="BUY" else (entry-last)*sz
         fee=sz*entry*FEE+sz*last*FEE
@@ -3380,7 +3400,7 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
     total=len(trades); wins=sum(1 for p in trades if p>0); losses=total-wins
     win_pnl=sum(p for p in trades if p>0); loss_pnl=abs(sum(p for p in trades if p<=0))
     profit_factor=round(win_pnl/loss_pnl,2) if loss_pnl>0 else (99.0 if wins>0 else 0.0)
-    score = profit_factor * (wins/total if total>0 else 0) - max_drawdown * 0.1  # 综合评分
+    score = profit_factor * (wins/total if total>0 else 0) - max_drawdown * 0.1
     return {
         "total_trades": total,
         "wins": wins,
@@ -3432,12 +3452,14 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
 
     # 所有计算全部卸到线程池，避免阻塞事件循环
     def _grid_search():
+        # 预计算一次全量信号数组，96组参数复用，O(N²)→O(N+96N)
+        precomp = _precompute_signals(data, sym_short)
         out = []
         for cfg in combos:
-            stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage)
+            stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage, signals=precomp)
             if stats["total_trades"] >= 3:
                 out.append({**cfg, **stats})
-        cur_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage)
+        cur_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage, signals=precomp)
         return out, cur_stats
 
     loop = asyncio.get_running_loop()
