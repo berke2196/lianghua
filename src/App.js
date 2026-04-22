@@ -93,7 +93,7 @@ function App() {
   const runBacktest = async () => {
     setBtLoading(true); setBtError(''); setBtResult(null);
     try {
-      const r = await authFetch('/api/backtest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(btForm)});
+      const r = await safeAuthFetch('/api/backtest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(btForm)});
       const d = await r.json();
       if (d.ok) { setBtResult(d); showToast(`✅ 回测完成 ${d.total_trades}笔交易`,'success'); }
       else setBtError(d.error || '回测失败');
@@ -103,7 +103,7 @@ function App() {
   const runBtOptimize = async () => {
     setBtOptLoading(true); setBtOptError(''); setBtOptResult(null);
     try {
-      const r = await authFetch('/api/backtest/optimize', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(btForm)});
+      const r = await safeAuthFetch('/api/backtest/optimize', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(btForm)});
       const d = await r.json();
       if (d.ok) { setBtOptResult(d); showToast(`🔍 优化完成，测试${d.tested}组参数`,'success'); }
       else setBtOptError(d.error || '优化失败');
@@ -113,7 +113,7 @@ function App() {
   const applyBtParams = async (params) => {
     setBtApplying(true);
     try {
-      const r = await authFetch('/api/backtest/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
+      const r = await safeAuthFetch('/api/backtest/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
       const d = await r.json();
       if (d.ok) {
         setSettings(p => ({...p, ...params}));
@@ -197,6 +197,22 @@ function App() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   }, []);
+
+  // ─── 带401自动登出的authFetch包装 ───
+  const safeAuthFetch = useCallback(async (path, opts = {}) => {
+    const res = await authFetch(path, opts);
+    if (res.status === 401) {
+      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('auth_user');
+      localStorage.removeItem('is_admin');
+      setAccount({ logged_in: false, balance: 0, available: 0, positions: [], open_orders: [] });
+      setIsTrading(false);
+      setTradeLogs([]);
+      _setView('login');
+      showToast('⚠️ 登录已过期，请重新登录', 'error');
+    }
+    return res;
+  }, [showToast]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── JWT 初始化：有 token 直接进登录页，并自动拉取已保存的地址 ───
   useEffect(() => {
@@ -283,7 +299,7 @@ function App() {
   const handleGenLicense = async () => {
     setAdminGenLoading(true); setAdminNewCodes([]);
     try {
-      const r = await authFetch('/api/admin/generate-license', {
+      const r = await safeAuthFetch('/api/admin/generate-license', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ count: adminGenCount, days: adminGenDays })
@@ -300,12 +316,12 @@ function App() {
     if (!jwtToken) return;
     try {
       if (tab === 'users' || tab === 'all') {
-        const r = await authFetch('/api/admin/users');
+        const r = await safeAuthFetch('/api/admin/users');
         const d = await r.json();
         if (d.ok) setAdminUsers(d.data);
       }
       if (tab === 'licenses' || tab === 'all') {
-        const r = await authFetch('/api/admin/licenses');
+        const r = await safeAuthFetch('/api/admin/licenses');
         const d = await r.json();
         if (d.ok) setAdminLicenses(d.data);
       }
@@ -334,7 +350,7 @@ function App() {
       // 同步用户状态（需要认证）
       if (account.logged_in) {
         try {
-          const sr = await authFetch('/api/trading/status', { signal: AbortSignal.timeout(4000) });
+          const sr = await safeAuthFetch('/api/trading/status', { signal: AbortSignal.timeout(4000) });
           if (sr.ok) {
             const sd = await sr.json();
             if (!!sd.auto_trading !== isTradingRef.current) setIsTrading(!!sd.auto_trading);
@@ -505,7 +521,7 @@ function App() {
     if (!account.logged_in) return;
     const fetch_logs = async () => {
       try {
-        const r = await authFetch('/api/trading/logs?limit=500');
+        const r = await safeAuthFetch('/api/trading/logs?limit=500');
         if (r.ok) {
           const d = await r.json();
           setTradeLogs(d.logs || []);
@@ -515,7 +531,7 @@ function App() {
     };
     const fetch_settings = async () => {
       try {
-        const r = await authFetch('/api/trading/status');
+        const r = await safeAuthFetch('/api/trading/status');
         if (r.ok) {
           const d = await r.json();
           if (d.settings) {
@@ -529,7 +545,7 @@ function App() {
     fetch_logs();
     fetch_settings(); // 恢复后端settings含symbol_settings
     // 拉取Telegram配置
-    authFetch('/api/telegram/config').then(r=>r.json()).then(d=>{
+    safeAuthFetch('/api/telegram/config').then(r=>r.json()).then(d=>{
       if(d.ok) setTgConfig(d);
     }).catch(()=>{});
   }, [account.logged_in]);
@@ -568,7 +584,7 @@ function App() {
         // 延迟拉取后端状态，同步 isTrading（后端登录后自动启动HFT）
         setTimeout(async () => {
           try {
-            const hr = await authFetch('/api/trading/status');
+            const hr = await safeAuthFetch('/api/trading/status');
             const hd = await hr.json();
             if (hd.auto_trading) setIsTrading(true);
           } catch {}
@@ -608,7 +624,7 @@ function App() {
   const _doClosePosition = async (symbol) => {
     setCloseConfirm(null);
     try {
-      const r = await authFetch('/api/trading/close_position', {
+      const r = await safeAuthFetch('/api/trading/close_position', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol }),
@@ -621,7 +637,7 @@ function App() {
 
   const cancelOrders = async (symbol) => {
     try {
-      const r = await authFetch('/api/trading/cancel_orders', {
+      const r = await safeAuthFetch('/api/trading/cancel_orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol }),
@@ -659,9 +675,9 @@ function App() {
       globalOnly2.enable_long  = dir2 === 'long'  || dir2 === 'both';
       globalOnly2.enable_short = dir2 === 'short' || dir2 === 'both';
       const payload = { ...globalOnly2, symbol_settings: symbolSettings };
-      const sr = await authFetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      const sr = await safeAuthFetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
       if (!sr.ok) { showToast('❌ 设置保存失败，请重试', 'error'); return; }
-      const r = await authFetch('/api/trading/start', { method: 'POST' });
+      const r = await safeAuthFetch('/api/trading/start', { method: 'POST' });
       const d = await r.json();
       if (d.ok) {
         setIsTrading(true);
@@ -679,7 +695,7 @@ function App() {
 
   const stopTrading = async () => {
     try {
-      await authFetch('/api/trading/stop', { method: 'POST' });
+      await safeAuthFetch('/api/trading/stop', { method: 'POST' });
       setIsTrading(false);
       showToast(`⏹️ 交易已停止 | 本次共 ${perf.total_trades} 笔 | 胜率 ${perf.win_rate}%`, 'info');
     } catch (e) {
@@ -697,7 +713,7 @@ function App() {
   const testOrder = async (side) => {
     setTestOrdering(true);
     try {
-      const r = await authFetch('/api/trading/test_order', {
+      const r = await safeAuthFetch('/api/trading/test_order', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ symbol: settings.symbol, side }),
@@ -727,7 +743,7 @@ function App() {
       globalOnly.enable_long  = dir === 'long'  || dir === 'both';
       globalOnly.enable_short = dir === 'short' || dir === 'both';
       const payload = { ...globalOnly, symbol_settings: symbolSettings };
-      const r = await authFetch('/api/settings', {
+      const r = await safeAuthFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1513,7 +1529,7 @@ function App() {
                                   <button onClick={async()=>{
                                     const ns = {...symbolSettings}; delete ns[symKey];
                                     setSymbolSettings(ns);
-                                    await authFetch('/api/settings/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:symKey,params:{stop_loss_pct:settings.stop_loss_pct,take_profit_pct:settings.take_profit_pct,leverage:settings.leverage,min_confidence:settings.min_confidence}})});
+                                    await safeAuthFetch('/api/settings/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:symKey,params:{stop_loss_pct:settings.stop_loss_pct,take_profit_pct:settings.take_profit_pct,leverage:settings.leverage,min_confidence:settings.min_confidence}})});
                                     showToast(`✅ 已重置 ${symKey} 为全局参数`,'success');
                                   }} style={{fontSize:9,padding:'2px 6px',background:'rgba(255,45,120,0.1)',border:'1px solid rgba(255,45,120,0.35)',color:'var(--pink)',borderRadius:3,cursor:'pointer'}}>
                                     🔄 重置为全局参数
@@ -1591,7 +1607,7 @@ function App() {
                     <button className="btn-danger" onClick={stopTrading} disabled={!isTrading}>⏹️ 停止</button>
                     <button onClick={async()=>{
                       try{
-                        const r = await authFetch('/api/trading/reset_daily',{method:'POST'});
+                        const r = await safeAuthFetch('/api/trading/reset_daily',{method:'POST'});
                         const d = await r.json();
                         showToast(`🔄 ${d.message}`,'warn');
                       }catch(e){ showToast('重置失败: '+e.message,'error'); }
@@ -1984,7 +2000,7 @@ function App() {
                         <button
                           onClick={async()=>{
                             try {
-                              const r = await authFetch('/api/optimize/run', {method:'POST'});
+                              const r = await safeAuthFetch('/api/optimize/run', {method:'POST'});
                               const d = await r.json();
                               if (d.best) {
                                 showToast(`✅ 优化完成！最优: conf=${d.best.min_confidence} sl=${(d.best.stop_loss_pct*100).toFixed(1)}%`, 'success');
@@ -2406,7 +2422,7 @@ function App() {
                         <button key={val} onClick={async()=>{
                           const next={...settings,hft_mode:val};
                           setSettings(next);
-                          try{ await authFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...next,symbol_settings:symbolSettings})}); showToast(`✅ 已切换到${label}模式`,'success'); }
+                          try{ await safeAuthFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...next,symbol_settings:symbolSettings})}); showToast(`✅ 已切换到${label}模式`,'success'); }
                           catch{ showToast('模式切换失败','error'); }
                         }} style={{flex:'1 1 calc(25% - 6px)',minWidth:72,padding:'8px 4px',borderRadius:6,cursor:'pointer',textAlign:'center',
                           background:active?'rgba(0,245,255,0.06)':'transparent',
@@ -2716,7 +2732,7 @@ function App() {
                           if(next.length===0) return;
                           const ns={...settings,active_symbols:next,symbol:next[0]};
                           setSettings(ns);
-                          try{ await authFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...ns,symbol_settings:symbolSettings})}); }catch{}
+                          try{ await safeAuthFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...ns,symbol_settings:symbolSettings})}); }catch{}
                         }} style={{padding:'4px 9px',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:700,
                           background:active?`${color}28`:'transparent',
                           border:`1.5px solid ${active?color:'rgba(0,245,255,0.1)'}`,
@@ -2763,7 +2779,7 @@ function App() {
                                 <button onClick={async()=>{
                                   const params={take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf};
                                   setSymbolSettings(p=>({...p,[sym]:params}));
-                                  try{ await authFetch('/api/settings/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym,params})}); showToast(`✅ ${label} 已保存`,'success'); }
+                                  try{ await safeAuthFetch('/api/settings/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym,params})}); showToast(`✅ ${label} 已保存`,'success'); }
                                   catch{ showToast('保存失败','error'); }
                                 }} style={{fontSize:10,padding:'3px 10px',borderRadius:3,border:`1px solid ${color}`,background:`${color}22`,color,cursor:'pointer'}}>💾 保存</button>
                               </div>
@@ -2816,7 +2832,7 @@ function App() {
                       <button onClick={async()=>{
                         setOptLoading(true);
                         try{
-                          const r=await authFetch('/api/optimize/run',{method:'POST'});
+                          const r=await safeAuthFetch('/api/optimize/run',{method:'POST'});
                           const d=await r.json();
                           setOptResult(d);
                           if(d.best) showToast('✅ 优化完成','success');
@@ -2847,7 +2863,7 @@ function App() {
                         </div>
                         <button onClick={async()=>{
                           try{
-                            const r=await authFetch('/api/optimize/apply',{method:'POST'});
+                            const r=await safeAuthFetch('/api/optimize/apply',{method:'POST'});
                             const d=await r.json();
                             if(d.ok){setSettings(p=>({...p,...d.applied}));showToast('✅ 最优参数已应用','success');}
                             else showToast(d.error||'应用失败','error');
@@ -2925,7 +2941,7 @@ function App() {
                         if(!tgConfig.token||!tgConfig.chat_id){showToast('Token和Chat ID不能为空','error');return;}
                         setTgSaving(true);
                         try{
-                          const r=await authFetch('/api/telegram/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:tgConfig.token,chat_id:tgConfig.chat_id})});
+                          const r=await safeAuthFetch('/api/telegram/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:tgConfig.token,chat_id:tgConfig.chat_id})});
                           const d=await r.json();
                           if(d.ok){setTgConfig(p=>({...p,token_set:true,enabled:true}));showToast('✅ Telegram配置已保存','success');}
                           else showToast(`❌ ${d.error}`,'error');
@@ -2937,7 +2953,7 @@ function App() {
                       </button>
                       <button onClick={async()=>{
                         try{
-                          const r=await authFetch('/api/telegram/test',{method:'POST'});
+                          const r=await safeAuthFetch('/api/telegram/test',{method:'POST'});
                           const d=await r.json();
                           if(d.ok) showToast('📲 测试消息已发送','success');
                           else showToast(`❌ ${d.error}`,'error');
@@ -3328,14 +3344,14 @@ function App() {
                                 <button onClick={async()=>{
                                   const days=prompt(`给 ${u.username} 续期多少天？`,30);
                                   if(!days||isNaN(+days)) return;
-                                  const r=await authFetch('/api/admin/extend-license',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username,days:+days})});
+                                  const r=await safeAuthFetch('/api/admin/extend-license',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username,days:+days})});
                                   const d=await r.json();
                                   if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
                                   else showToast(`❌ ${d.msg}`,'error');
                                 }} style={{fontSize:11,padding:'2px 8px',borderRadius:3,background:'rgba(0,245,100,0.08)',border:'1px solid rgba(0,245,100,0.3)',color:'var(--green)',cursor:'pointer'}}>续期</button>
                                 <button onClick={async()=>{
                                   if(!window.confirm(`确认${u.is_active?'封禁':'解封'} ${u.username}？`)) return;
-                                  const r=await authFetch('/api/admin/toggle-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username})});
+                                  const r=await safeAuthFetch('/api/admin/toggle-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.username})});
                                   const d=await r.json();
                                   if(d.ok){showToast(`✅ ${d.msg}`,'success');loadAdminData('users');}
                                   else showToast(`❌ ${d.msg}`,'error');
@@ -3369,7 +3385,7 @@ function App() {
             <div style={{display:'flex',gap:8}}>
               <button onClick={async()=>{
                 if(!changePwdVal||changePwdVal.length<8){setChangePwdMsg('❌ 密码至少8位');return;}
-                const r=await authFetch('/api/admin/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:changePwdTarget,new_password:changePwdVal})});
+                const r=await safeAuthFetch('/api/admin/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:changePwdTarget,new_password:changePwdVal})});
                 const d=await r.json();
                 setChangePwdMsg(d.ok?`✅ ${d.msg}`:`❌ ${d.msg}`);
                 if(d.ok){setChangePwdVal('');setTimeout(()=>setChangePwdTarget(''),1200);}

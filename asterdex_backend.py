@@ -1387,28 +1387,31 @@ class CryptoHFTEngine:
         for i in range(len(atrs)):
             if atrs[i] is None:
                 continue
-            hl2 = (highs[i+1] + lows[i+1]) / 2
+            # i+1 是对应当前K线的索引（trs[i] = TR of K线[i+1]）
+            ci = i + 1  # 当前K线索引
+            if ci >= len(closes): break
+            hl2 = (highs[ci] + lows[ci]) / 2
             basic_upper = hl2 + mult * atrs[i]
             basic_lower = hl2 - mult * atrs[i]
-            # 上轨只能下降或持平（防止频繁翻转）
+            # 上轨只能下降、下轨只能上升（防止频繁翻转）
             if prev_upper is None:
                 upper = basic_upper
                 lower = basic_lower
             else:
-                upper = basic_upper if basic_upper < prev_upper or closes[i] > prev_upper else prev_upper
-                lower = basic_lower if basic_lower > prev_lower or closes[i] < prev_lower else prev_lower
-            # 方向翻转逻辑
+                upper = basic_upper if basic_upper < prev_upper or closes[ci-1] > prev_upper else prev_upper
+                lower = basic_lower if basic_lower > prev_lower or closes[ci-1] < prev_lower else prev_lower
+            # 方向翻转逻辑：用当前K线收盘判断是否穿越轨道
             if prev_st is None:
                 st_val = lower if st_direction == 1 else upper
             else:
                 if st_direction == 1:
                     st_val = lower
-                    if closes[i+1] < st_val:
+                    if closes[ci] < st_val:
                         st_direction = -1
                         st_val = upper
                 else:
                     st_val = upper
-                    if closes[i+1] > st_val:
+                    if closes[ci] > st_val:
                         st_direction = 1
                         st_val = lower
             prev_upper = upper
@@ -1418,10 +1421,12 @@ class CryptoHFTEngine:
         elif st_direction == -1: return "down"
         return "neutral"
 
-    def _vwap(self, highs, lows, closes, volumes):
-        typical = [(h+l+c)/3 for h,l,c in zip(highs, lows, closes)]
-        tv = sum(t*v for t,v in zip(typical, volumes))
-        sv = sum(volumes)
+    def _vwap(self, highs, lows, closes, volumes, window=200):
+        """用最近window根K线计算VWAP，避免历史数据过多导致偏离值失真"""
+        h = highs[-window:]; l = lows[-window:]; c = closes[-window:]; v = volumes[-window:]
+        typical = [(hi+lo+cl)/3 for hi,lo,cl in zip(h, l, c)]
+        tv = sum(t*vol for t,vol in zip(typical, v))
+        sv = sum(v)
         return tv / sv if sv > 0 else closes[-1]
 
     def _obi(self, sym_short: str, orderbooks: dict = None):
@@ -3214,6 +3219,14 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
                     equity_curve.append({"ts": ts_str, "equity": equity})
                     position = None
                 else:
+                    # 持仓浮亏也计入max_drawdown
+                    if position["side"] == "BUY":
+                        float_pnl = (close - position["entry"]) * position["sz"]
+                    else:
+                        float_pnl = (position["entry"] - close) * position["sz"]
+                    float_equity = equity + float_pnl
+                    if max_equity is not None:
+                        max_drawdown = max(max_drawdown, max_equity - float_equity)
                     equity_curve.append({"ts": ts_str, "equity": equity})
                 continue
 
@@ -3235,6 +3248,7 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
             tp = close * (1 + req.take_profit_pct) if side == "BUY" else close * (1 - req.take_profit_pct)
             position = {"side": side, "entry": close, "sz": sz, "sl": sl, "tp": tp, "open_ts": ts_str}
             equity_curve.append({"ts": ts_str, "equity": equity})
+            continue  # 开仓当根不再检查止损，下一根才有效
 
         # 强平剩余持仓
         if position:
@@ -3318,6 +3332,11 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                 if max_equity is None or equity>max_equity: max_equity=equity
                 dd=max_equity-equity; max_drawdown=max(max_drawdown,dd)
                 position=None
+            else:
+                # 持仓浮亏也计入max_drawdown
+                float_pnl=(close-position["entry"])*position["sz"] if position["side"]=="BUY" else (position["entry"]-close)*position["sz"]
+                float_eq=equity+float_pnl
+                if max_equity is not None: max_drawdown=max(max_drawdown,max_equity-float_eq)
             continue
 
         side,conf,_ = signal_engine.compute(window, sym_short)
@@ -3331,6 +3350,7 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
         sl=close*(1-sl_pct) if side=="BUY" else close*(1+sl_pct)
         tp=close*(1+tp_pct) if side=="BUY" else close*(1-tp_pct)
         position={"side":side,"entry":close,"sz":sz,"sl":sl,"tp":tp}
+        continue  # 开仓当根不检查止损
 
     if position:  # 强平
         last=float(data[-1][4]); sz=position["sz"]; entry=position["entry"]
