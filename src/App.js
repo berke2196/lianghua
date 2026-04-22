@@ -2820,21 +2820,24 @@ function App() {
                           const curSl   = cur.stop_loss_pct    ?? 0.012;
                           const curLev  = cur.leverage         ?? 3;
                           const curConf = cur.min_confidence   ?? 0.65;
+                          const curMode = cur.hft_mode         ?? settings.hft_mode ?? 'balanced';
+                          const modeMap = {conservative:'🛡️精准',balanced:'⚖️平衡',aggressive:'⚡激进',turbo:'🚀极速'};
                           return (
                             <div key={sym} style={{border:`1px solid ${color}44`,borderRadius:6,padding:'8px 10px',background:`${color}08`}}>
                               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:7}}>
                                 <div style={{display:'flex',alignItems:'center',gap:6}}>
                                   <span style={{fontWeight:700,color,fontSize:12}}>{label}</span>
                                   {hasCust && <span style={{fontSize:9,padding:'1px 5px',background:`${color}22`,border:`1px solid ${color}55`,color,borderRadius:2}}>已自定义</span>}
+                                  {hasCust && cur.hft_mode && <span style={{fontSize:9,padding:'1px 5px',background:'rgba(255,180,0,0.12)',border:'1px solid rgba(255,180,0,0.4)',color:'#ffb400',borderRadius:2}}>{modeMap[cur.hft_mode]||cur.hft_mode}</span>}
                                 </div>
                                 <button onClick={async()=>{
-                                  const params={take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf};
+                                  const params={take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf,hft_mode:curMode};
                                   setSymbolSettings(p=>({...p,[sym]:params}));
                                   try{ await safeAuthFetch('/api/settings/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym,params})}); showToast(`✅ ${label} 已保存`,'success'); }
                                   catch{ showToast('保存失败','error'); }
                                 }} style={{fontSize:10,padding:'3px 10px',borderRadius:3,border:`1px solid ${color}`,background:`${color}22`,color,cursor:'pointer'}}>💾 保存</button>
                               </div>
-                              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:6}}>
+                              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:6,marginBottom:6}}>
                                 {[
                                   {key:'take_profit_pct', label:'止盈 %',  val:curTp,   kc:'var(--cyan)',  step:0.1, min:0.1, max:10},
                                   {key:'stop_loss_pct',   label:'止损 %',  val:curSl,   kc:'var(--pink)',  step:0.1, min:0.1, max:5},
@@ -2848,10 +2851,22 @@ function App() {
                                       onChange={e=>{
                                         let v=parseFloat(e.target.value); if(isNaN(v)) return;
                                         const stored=(key==='min_confidence'||key==='take_profit_pct'||key==='stop_loss_pct')?v/100:(key==='leverage'?v:v/100);
-                                        setSymbolSettings(p=>({...p,[sym]:{...(p[sym]||{}),take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf,[key]:stored}}));
+                                        setSymbolSettings(p=>({...p,[sym]:{...(p[sym]||{}),take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf,hft_mode:curMode,[key]:stored}}));
                                       }}
                                       style={{width:'100%',padding:'3px 4px',background:'rgba(0,245,255,0.04)',border:`1px solid ${kc}55`,color:kc,borderRadius:3,fontSize:11,textAlign:'right'}} />
                                   </div>
+                                ))}
+                              </div>
+                              <div style={{display:'flex',gap:4}}>
+                                <span style={{fontSize:9,color:'var(--text-dim)',alignSelf:'center'}}>模式：</span>
+                                {['conservative','balanced','aggressive','turbo'].map(m=>(
+                                  <button key={m} onClick={()=>setSymbolSettings(p=>({...p,[sym]:{...(p[sym]||{}),take_profit_pct:curTp,stop_loss_pct:curSl,leverage:curLev,min_confidence:curConf,hft_mode:m}}))}
+                                    style={{flex:1,padding:'2px 0',fontSize:9,borderRadius:3,cursor:'pointer',
+                                      background:curMode===m?'rgba(255,180,0,0.15)':'transparent',
+                                      border:`1px solid ${curMode===m?'rgba(255,180,0,0.6)':'rgba(255,255,255,0.1)'}`,
+                                      color:curMode===m?'#ffb400':'var(--text-dim)'}}>
+                                    {modeMap[m]}
+                                  </button>
                                 ))}
                               </div>
                             </div>
