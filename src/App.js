@@ -664,6 +664,10 @@ function App() {
   const saveSettings = async () => {
     try {
       const { symbol_settings: _drop, ...globalOnly } = settings;
+      // 同步 trade_direction → enable_long / enable_short（后端兼容旧字段）
+      const dir = globalOnly.trade_direction || 'both';
+      globalOnly.enable_long  = dir === 'long'  || dir === 'both';
+      globalOnly.enable_short = dir === 'short' || dir === 'both';
       const payload = { ...globalOnly, symbol_settings: symbolSettings };
       const r = await authFetch('/api/settings', {
         method: 'POST',
@@ -2451,16 +2455,12 @@ function App() {
                           onChange={e=>setSettings(p=>({...p,add_position_count:+e.target.value}))} />
                       </div>
                       <div className="form-group">
-                        <label style={{display:'flex',alignItems:'center',gap:4}}>
-                          <input type="checkbox" checked={settings.enable_double_add}
-                            onChange={e=>setSettings(p=>({...p,enable_double_add:e.target.checked}))} />
-                          开仓加倍
-                        </label>
+                        <label>补仓EMA监测</label>
                         <select value={settings.add_position_ema} onChange={e=>setSettings(p=>({...p,add_position_ema:e.target.value}))}>
-                          <option value="off">补仓EMA: 关闭</option>
-                          <option value="5m">补仓EMA: 5分钟</option>
-                          <option value="15m">补仓EMA: 15分钟</option>
-                          <option value="30m">补仓EMA: 30分钟</option>
+                          <option value="off">关闭</option>
+                          <option value="5m">5分钟</option>
+                          <option value="15m">15分钟</option>
+                          <option value="30m">30分钟</option>
                         </select>
                       </div>
                       <div className="form-group">
@@ -2473,6 +2473,11 @@ function App() {
                       </div>
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                      <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
+                        <input type="checkbox" checked={settings.enable_double_add}
+                          onChange={e=>setSettings(p=>({...p,enable_double_add:e.target.checked}))} />
+                        开仓加倍
+                      </label>
                       <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
                         <input type="checkbox" checked={settings.anti_waterfall}
                           onChange={e=>setSettings(p=>({...p,anti_waterfall:e.target.checked}))} />
@@ -2517,7 +2522,7 @@ function App() {
                       </div>
                     )}
                     <div className="form-group">
-                      <label>止盈比例(%)</label>
+                      <label>止盈比例(%) <span style={{fontSize:9,color:'var(--text-dim)'}}>触发止盈的涨幅</span></label>
                       <input type="number" step="0.1" min="0.1" value={(settings.take_profit_pct*100).toFixed(1)}
                         onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} />
                     </div>
