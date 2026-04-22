@@ -3218,8 +3218,9 @@ async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
                                    "side": position["side"], "entry": round(entry, 4),
                                    "exit": round(exit_price, 4), "pnl": pnl,
                                    "reason": exit_reason, "equity": equity})
+                    if max_equity is not None:
+                        max_drawdown = max(max_drawdown, max_equity - equity)
                     if max_equity is None or equity > max_equity: max_equity = equity
-                    max_drawdown = max(max_drawdown, max_equity - equity)
                     equity_curve.append({"ts": ts_str, "equity": equity})
                     position = None
                 else:
@@ -3333,8 +3334,9 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                 pnl=round(gross-fee,4)
                 equity=round(equity+pnl,4)
                 trades.append(pnl)
+                if max_equity is not None:
+                    dd=max_equity-equity; max_drawdown=max(max_drawdown,dd)
                 if max_equity is None or equity>max_equity: max_equity=equity
-                dd=max_equity-equity; max_drawdown=max(max_drawdown,dd)
                 position=None
             else:
                 # 持仓浮亏也计入max_drawdown
