@@ -40,6 +40,8 @@ def is_enabled() -> bool:
     return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
+_THROTTLE_MAX_TTL = 600  # _last_sent 条目最长存活秒数（与最大节流窗口一致）
+
 def _throttled(uid: int, key: str, secs: int = _THROTTLE_SECS) -> bool:
     """True 表示应跳过（太频繁）。按 uid 隔离，互不影响。"""
     k = (uid, key)
@@ -47,6 +49,11 @@ def _throttled(uid: int, key: str, secs: int = _THROTTLE_SECS) -> bool:
     if now - _last_sent.get(k, 0) < secs:
         return True
     _last_sent[k] = now
+    # GC：超过 2000 条时清除所有已超过最大 TTL 的过期记录，防止内存无限增长
+    if len(_last_sent) > 2000:
+        expired = [_k for _k, _t in list(_last_sent.items()) if now - _t > _THROTTLE_MAX_TTL]
+        for _k in expired:
+            _last_sent.pop(_k, None)
     return False
 
 
@@ -276,6 +283,7 @@ async def command_loop(get_state_fn, set_trading_fn, uid: int = 0):
                     continue  # 只响应本用户配置的 chat_id
                 if not text.startswith("/"):
                     continue
+                await asyncio.sleep(0.3)  # 每条命令处理后短暂间隔，防止快速连发消息时 429
 
                 st = get_state_fn()
                 bal     = st.get("balance", 0)
@@ -341,4 +349,4 @@ async def command_loop(get_state_fn, set_trading_fn, uid: int = 0):
 
         except Exception as e:
             logger.warning(f"命令轮询异常 uid={uid}: {e}")
-        await asyncio.sleep(1)
+            await asyncio.sleep(5)  # 异常退避，防止频繁触发 Telegram 429

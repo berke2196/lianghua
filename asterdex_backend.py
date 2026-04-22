@@ -1291,7 +1291,7 @@ async def kline_refresh_loop(uid: int = 0):
             # 全量刷新K线，但保留WS实时更新的最新一根（未完成K线）
             for sym in active:
                 try:
-                    data = await aster_get("/fapi/v3/klines", {"symbol": sym, "interval": interval, "limit": 200})
+                    data = await aster_get("/fapi/v3/klines", {"symbol": sym, "interval": interval, "limit": 200}, user_id=uid)
                     if data and isinstance(data, list):
                         existing = kline_cache.get(sym, [])
                         # 如果WS已更新最新一根（时间戳更新），保留WS版本
@@ -1754,10 +1754,12 @@ async def reconcile_positions(uid: int = 0):
             "level": "warn",
         }, user_id=uid)
         if alerting.is_user_enabled(uid):
+            _ep = entry.get('entry')
+            _ep_str = f"{_ep:.4f}" if _ep is not None else "N/A"
             asyncio.ensure_future(alerting.send_to_user(
                 uid,
                 f"👻 <b>[幽灵仓位] {sym}</b>\n"
-                f"本地Tracker有记录({entry.get('side')}@{entry.get('entry'):.4f})"
+                f"本地Tracker有记录({entry.get('side')}@{_ep_str})"
                 f" 但交易所已无持仓，已自动清除。\n请检查该币种是否有未记录的平仓。"
             ))
 
@@ -2116,18 +2118,24 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                 "text": f"⚠️ {symbol} 下单量精度截断为0，请联系开发排查精度配置", "level": "warn"}, user_id=uid)
         return
 
-    # ── 插针保护：下单前校验市价与信号价偏离不超过阈値 ──
+    # ── 插针保护：下单前校验实时市价与K线信号收盘价偏离不超过阈値 ──
+    # price 来自 market_prices（实时），kline_close 来自 kline_cache 最新bar收盘价（信号生成依据）
+    # 两者数据源不同，能真实反映"信号发出后价格是否急剧偏离"
     _SPIKE_PCT = float(sym_cfg.get("spike_protection_pct", s.get("spike_protection_pct", 2.0)))  # 默认2.0%，高频下小币波动大
-    cur_mkt = _st.market_prices.get(symbol, 0)
-    if cur_mkt > 0:
-        _dev = abs(cur_mkt - price) / price * 100
-        if _dev > _SPIKE_PCT:
+    _kl_cache = kline_cache.get(symbol, [])
+    _kline_close = float(_kl_cache[-1][4]) if _kl_cache else 0.0
+    cur_mkt = price  # 实时市价
+    if _kline_close > 0:
+        _dev = abs(cur_mkt - _kline_close) / _kline_close * 100
+    else:
+        _dev = 0.0  # K线数据不足时跳过插针检查
+    if _dev > _SPIKE_PCT:
             _spike_key = f"{symbol}_spike_log"
             _cd_spike = _get_close_cooldown(uid)
             if time.time() - _cd_spike.get(_spike_key, 0) >= 10:
                 _cd_spike[_spike_key] = time.time()
-                logger.warning(f"🛡️ {symbol} 插针保护触发：信号价={price:.4f} 市价={cur_mkt:.4f} 偏离={_dev:.2f}%>{_SPIKE_PCT}%，跳过")
-                asyncio.ensure_future(alerting.alert_spike_protection(symbol, price, cur_mkt, _dev, uid=uid))
+                logger.warning(f"🛡️ {symbol} 插针保护触发：K线收盘={_kline_close:.4f} 实时市价={cur_mkt:.4f} 偏离={_dev:.2f}%>{_SPIKE_PCT}%，跳过")
+                asyncio.ensure_future(alerting.alert_spike_protection(symbol, _kline_close, cur_mkt, _dev, uid=uid))
             return
 
     # ── 市价开仓（加锁：双重检查 + 设杠杆 + 下单 + tracker记录 原子化）──
@@ -2675,9 +2683,12 @@ async def admin_extend(body: dict, user=Depends(get_admin_user)):
     """延长用户到期时间"""
     from db import _conn
     username = body.get("username", "").strip()
-    days = int(body.get("days", 30))
-    if not username or days < 1:
-        return JSONResponse({"ok": False, "msg": "参数无效"}, status_code=400)
+    try:
+        days = int(body.get("days", 30))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "msg": "days 必须为整数"}, status_code=400)
+    if not username or days < 1 or days > 3650:
+        return JSONResponse({"ok": False, "msg": "参数无效（days 范围 1-3650）"}, status_code=400)
     with _conn() as c:
         u = c.execute("SELECT id, expires_at FROM users WHERE username=?", (username,)).fetchone()
         if not u:
@@ -3724,6 +3735,8 @@ async def save_telegram_config(body: dict, user=Depends(get_current_user)):
     chat_id = body.get("chat_id", "").strip()
     if not token or not chat_id:
         return JSONResponse({"ok": False, "error": "token和chat_id均不能为空"}, status_code=400)
+    if len(token) > 128 or len(chat_id) > 32:
+        return JSONResponse({"ok": False, "error": "token或chat_id格式不正确（长度超限）"}, status_code=400)
     save_user_config(uid, tg_token=token, tg_chat_id=chat_id)
     logger.info(f"✅ uid={uid} Telegram配置已保存")
     return {"ok": True, "message": "Telegram配置已保存"}

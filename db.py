@@ -319,8 +319,9 @@ def save_user_settings(user_id: int, settings: dict, perf: dict):
 def admin_change_password(username: str, new_password: str) -> dict:
     if not username or not new_password:
         return {"ok": False, "msg": "参数不能为空"}
-    if len(new_password) < _PW_MIN_LEN:
-        return {"ok": False, "msg": f"新密码至少{_PW_MIN_LEN}位"}
+    err = validate_inputs(password=new_password)
+    if err:
+        return {"ok": False, "msg": err}
     with _conn() as c:
         user = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
         if not user:

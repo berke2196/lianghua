@@ -3,7 +3,7 @@ auth.py — JWT Token 生成与验证
 安全特性：短期 token(8h)、jti 防重放、token 黑名单(登出)
 """
 import os, time, secrets
-from typing import Set
+from typing import Dict
 import jwt
 from fastapi import HTTPException, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -32,8 +32,8 @@ if not SECRET or SECRET == "CHANGE_ME_IN_PRODUCTION_USE_RANDOM_32_CHARS":
         print(f"[AUTH] ⚠️  JWT_SECRET 未设置且无法写入 .env: {_e}，重启后 token 将失效")
 
 # ── Token 黑名单（登出后立即失效）──
-# 生产环境应用 Redis；这里用内存集合（重启自动清空，可接受）
-_revoked_jtis: Set[str] = set()
+# 生产环境应用 Redis；这里用字典存 jti->exp，支持按过期时间精确清理
+_revoked_jtis: dict = {}  # jti -> exp(unix timestamp)
 
 # ── 单设备登录：每个用户只保留一个有效 jti ──
 _active_jti: dict = {}  # user_id -> jti
@@ -44,16 +44,17 @@ def create_token(user_id: int, username: str, is_admin: bool = False) -> str:
     # 踢掉旧 token（单设备登录）
     old_jti = _active_jti.get(user_id)
     if old_jti:
-        _revoked_jtis.add(old_jti)
+        _revoked_jtis[old_jti] = int(time.time()) + EXPIRE_H * 3600  # 保守估计旧token最晚过期时间
 
     jti = secrets.token_hex(16)
     _active_jti[user_id] = jti
+    exp_ts = int(time.time()) + EXPIRE_H * 3600
     payload = {
         "sub":      str(user_id),
         "username": username,
         "admin":    is_admin,
         "jti":      jti,
-        "exp":      int(time.time()) + EXPIRE_H * 3600,
+        "exp":      exp_ts,
         "iat":      int(time.time()),
     }
     return jwt.encode(payload, SECRET, algorithm=ALG)
@@ -65,13 +66,17 @@ def revoke_token(token: str):
         jti = payload.get("jti")
         uid = int(payload.get("sub", 0))
         if jti:
-            _revoked_jtis.add(jti)
+            exp = payload.get("exp", int(time.time()) + EXPIRE_H * 3600)
+            _revoked_jtis[jti] = exp
             # 同步清除 active 记录（避免登出后旧jti仍占位）
             if _active_jti.get(uid) == jti:
                 _active_jti.pop(uid, None)
-            # 防止无限增长：超过 10000 条时清空（8h后token自然过期，无安全风险）
+            # 防止无限增长：超过 10000 条时只清除已过期的 jti，不整体清空
             if len(_revoked_jtis) > 10000:
-                _revoked_jtis.clear()
+                now_ts = int(time.time())
+                expired_jtis = [j for j, ex in list(_revoked_jtis.items()) if ex < now_ts]
+                for j in expired_jtis:
+                    _revoked_jtis.pop(j, None)
     except Exception:
         pass
 
@@ -82,7 +87,7 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token 已过期，请重新登录")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token 无效")
-    if payload.get("jti") in _revoked_jtis:
+    if payload.get("jti") in _revoked_jtis:  # dict membership check, O(1)
         raise HTTPException(status_code=401, detail="Token 已失效，请重新登录")
     return payload
 
