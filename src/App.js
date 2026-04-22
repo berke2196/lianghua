@@ -438,6 +438,16 @@ function App() {
           case 'trading_status':
             setIsTrading(data.active || false);
             break;
+          case 'kicked':
+            showToast(`⚠️ ${data.reason || '账号在其他设备登录，您已被踢下线'}`, 'error');
+            setAccount({ logged_in: false, balance: 0, available: 0, positions: [], open_orders: [] });
+            setIsTrading(false);
+            setTradeLogs([]);
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('auth_user');
+            localStorage.removeItem('is_admin');
+            _setView('login');
+            break;
           case 'indicators_push': {
             const sym = data.symbol;
             if (!sym) break;

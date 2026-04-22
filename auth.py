@@ -35,10 +35,19 @@ if not SECRET or SECRET == "CHANGE_ME_IN_PRODUCTION_USE_RANDOM_32_CHARS":
 # 生产环境应用 Redis；这里用内存集合（重启自动清空，可接受）
 _revoked_jtis: Set[str] = set()
 
+# ── 单设备登录：每个用户只保留一个有效 jti ──
+_active_jti: dict = {}  # user_id -> jti
+
 bearer = HTTPBearer(auto_error=False)
 
 def create_token(user_id: int, username: str, is_admin: bool = False) -> str:
+    # 踢掉旧 token（单设备登录）
+    old_jti = _active_jti.get(user_id)
+    if old_jti:
+        _revoked_jtis.add(old_jti)
+
     jti = secrets.token_hex(16)
+    _active_jti[user_id] = jti
     payload = {
         "sub":      str(user_id),
         "username": username,
@@ -50,12 +59,16 @@ def create_token(user_id: int, username: str, is_admin: bool = False) -> str:
     return jwt.encode(payload, SECRET, algorithm=ALG)
 
 def revoke_token(token: str):
-    """登出时将 jti 加入黑名单"""
+    """登出时将 jti 加入黑名单，并清除 _active_jti 记录"""
     try:
         payload = jwt.decode(token, SECRET, algorithms=[ALG])
         jti = payload.get("jti")
+        uid = int(payload.get("sub", 0))
         if jti:
             _revoked_jtis.add(jti)
+            # 同步清除 active 记录（避免登出后旧jti仍占位）
+            if _active_jti.get(uid) == jti:
+                _active_jti.pop(uid, None)
             # 防止无限增长：超过 10000 条时清掉最老的一半
             if len(_revoked_jtis) > 10000:
                 to_remove = list(_revoked_jtis)[:5000]

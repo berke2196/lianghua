@@ -2400,7 +2400,19 @@ async def auth_password_login(request: Request, req: PasswordLoginRequest):
     log_login(req.username, ip, res["ok"], res.get("msg", ""))
     if not res["ok"]:
         return JSONResponse(res, status_code=401)
-    token = create_token(res["user_id"], res["username"], res["is_admin"])
+    uid = res["user_id"]
+    # ── 单设备登录：踢掉该用户所有旧 WS 连接 ──
+    old_sockets = list(ws_clients.get(uid, []))
+    if old_sockets:
+        kick_msg = json.dumps({"type": "kicked", "data": {"reason": "账号在其他设备登录，您已被踢下线"}})
+        for old_ws in old_sockets:
+            try:
+                await old_ws.send_text(kick_msg)
+                await old_ws.close(1000)
+            except Exception:
+                pass
+        ws_clients.pop(uid, None)
+    token = create_token(uid, res["username"], res["is_admin"])
     return {"ok": True, "token": token, "username": res["username"],
             "is_admin": res["is_admin"], "expires_at": res["expires_at"]}
 
