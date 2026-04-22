@@ -3044,6 +3044,171 @@ async def save_symbol_settings(body: dict, user=Depends(get_current_user)):
     save_user_settings(uid, st.settings, st.perf)
     return {"ok": True, "symbol": symbol, "params": ss[symbol]}
 
+# ─────────────────────────────────────────────
+# 回测接口
+# ─────────────────────────────────────────────
+class BacktestRequest(BaseModel):
+    symbol:        str   = "BTCUSDT"
+    interval:      str   = "1m"
+    limit:         int   = 1000          # 最多拉取多少根K线
+    min_confidence: float = 0.65
+    stop_loss_pct:  float = 0.005
+    take_profit_pct: float = 0.008
+    hft_mode:      str   = "balanced"
+    enable_long:   bool  = True
+    enable_short:  bool  = True
+    trade_size_usd: float = 10.0
+    leverage:      int   = 5
+
+@app.post(R("/api/backtest"))
+async def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
+    """
+    历史回测：拉取历史K线 → 逐根跑信号引擎 → 模拟开平仓 → 返回报告
+    """
+    uid = int(user["sub"])
+    st  = get_user_state(uid)
+
+    # 拉取历史K线（最多3000根，防止超时）
+    limit = min(int(req.limit), 3000)
+    data = await aster_get("/fapi/v3/klines",
+        {"symbol": req.symbol, "interval": req.interval, "limit": limit},
+        user_id=uid)
+    if not data or not isinstance(data, list) or len(data) < 65:
+        return JSONResponse({"ok": False, "error": f"K线数据不足: {len(data) if data else 0}根，需要≥65根"}, status_code=400)
+
+    sym_short = req.symbol.replace("USDT", "")
+    sim_cfg = {
+        "min_confidence":  req.min_confidence,
+        "stop_loss_pct":   req.stop_loss_pct,
+        "take_profit_pct": req.take_profit_pct,
+        "hft_mode":        req.hft_mode,
+        "enable_long":     req.enable_long,
+        "enable_short":    req.enable_short,
+    }
+    FEE = 0.0005  # 单边手续费
+
+    trades       = []
+    equity_curve = []
+    equity       = 0.0
+    position     = None   # {"side","entry","sz","sl","tp","open_i"}
+    max_equity   = 0.0
+    max_drawdown = 0.0
+
+    for i in range(65, len(data)):
+        window  = data[:i+1]
+        candle  = data[i]
+        hi      = float(candle[2])
+        lo      = float(candle[3])
+        close   = float(candle[4])
+        ts_ms   = int(candle[0])
+        ts_str  = datetime.utcfromtimestamp(ts_ms / 1000).strftime("%m-%d %H:%M")
+
+        # ── 持仓中检查止盈止损 ──
+        if position:
+            exit_price = None
+            exit_reason = None
+            if position["side"] == "BUY":
+                if lo <= position["sl"]:
+                    exit_price = position["sl"]; exit_reason = "止损"
+                elif hi >= position["tp"]:
+                    exit_price = position["tp"]; exit_reason = "止盈"
+            else:  # SELL
+                if hi >= position["sl"]:
+                    exit_price = position["sl"]; exit_reason = "止损"
+                elif lo <= position["tp"]:
+                    exit_price = position["tp"]; exit_reason = "止盈"
+
+            if exit_price:
+                sz    = position["sz"]
+                entry = position["entry"]
+                gross = (exit_price - entry) * sz if position["side"] == "BUY" else (entry - exit_price) * sz
+                fee   = sz * entry * FEE + sz * exit_price * FEE
+                pnl   = round(gross - fee, 4)
+                equity = round(equity + pnl, 4)
+                trades.append({
+                    "open_ts":  position["open_ts"],
+                    "close_ts": ts_str,
+                    "side":     position["side"],
+                    "entry":    round(entry, 4),
+                    "exit":     round(exit_price, 4),
+                    "pnl":      pnl,
+                    "reason":   exit_reason,
+                    "equity":   equity,
+                })
+                max_equity   = max(max_equity, equity)
+                dd           = max_equity - equity
+                max_drawdown = max(max_drawdown, dd)
+                equity_curve.append({"ts": ts_str, "equity": equity})
+                position = None
+            else:
+                equity_curve.append({"ts": ts_str, "equity": equity})
+            continue
+
+        # ── 无持仓：跑信号 ──
+        side, conf, block = signal_engine.generate(sim_cfg, sym_short)
+        if side == "HOLD":
+            equity_curve.append({"ts": ts_str, "equity": equity})
+            continue
+
+        # 以当前收盘价开仓
+        notional = req.trade_size_usd * req.leverage
+        sz       = notional / close
+        sl = close * (1 - req.stop_loss_pct)  if side == "BUY" else close * (1 + req.stop_loss_pct)
+        tp = close * (1 + req.take_profit_pct) if side == "BUY" else close * (1 - req.take_profit_pct)
+        position = {"side": side, "entry": close, "sz": sz, "sl": sl, "tp": tp, "open_ts": ts_str}
+        equity_curve.append({"ts": ts_str, "equity": equity})
+
+    # 若回测结束仍有持仓，按最后收盘价强平
+    if position:
+        last  = float(data[-1][4])
+        sz    = position["sz"]
+        entry = position["entry"]
+        gross = (last - entry) * sz if position["side"] == "BUY" else (entry - last) * sz
+        fee   = sz * entry * FEE + sz * last * FEE
+        pnl   = round(gross - fee, 4)
+        equity = round(equity + pnl, 4)
+        trades.append({
+            "open_ts":  position["open_ts"],
+            "close_ts": "回测结束",
+            "side":     position["side"],
+            "entry":    round(entry, 4),
+            "exit":     round(last, 4),
+            "pnl":      pnl,
+            "reason":   "强平",
+            "equity":   equity,
+        })
+
+    total   = len(trades)
+    wins    = sum(1 for t in trades if t["pnl"] > 0)
+    losses  = total - wins
+    win_rate = round(wins / total * 100, 1) if total > 0 else 0
+    total_pnl = round(sum(t["pnl"] for t in trades), 4)
+    avg_win  = round(sum(t["pnl"] for t in trades if t["pnl"] > 0) / max(wins, 1), 4)
+    avg_loss = round(sum(t["pnl"] for t in trades if t["pnl"] <= 0) / max(losses, 1), 4)
+    profit_factor = round(abs(avg_win * wins / (avg_loss * losses + 1e-9)), 2)
+
+    # 精简equity_curve（最多200点）
+    step = max(1, len(equity_curve) // 200)
+    equity_curve_slim = equity_curve[::step]
+
+    return {
+        "ok": True,
+        "symbol":       req.symbol,
+        "interval":     req.interval,
+        "bars":         len(data),
+        "total_trades": total,
+        "wins":         wins,
+        "losses":       losses,
+        "win_rate":     win_rate,
+        "total_pnl":    total_pnl,
+        "avg_win":      avg_win,
+        "avg_loss":     avg_loss,
+        "profit_factor": profit_factor,
+        "max_drawdown": round(max_drawdown, 4),
+        "trades":       trades[-50:],       # 只返回最近50笔
+        "equity_curve": equity_curve_slim,
+    }
+
 @app.post(R("/api/trading/close_position"))
 async def api_close_position(body: dict, user=Depends(get_current_user)):
     uid = int(user["sub"]); st = get_user_state(uid)

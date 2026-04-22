@@ -77,6 +77,26 @@ function App() {
   const [showScores, setShowScores] = useState(false);
   const [optResult, setOptResult] = useState(null);
   const [optLoading, setOptLoading] = useState(false);
+  // 回测
+  const [btForm, setBtForm] = useState({
+    symbol:'BTCUSDT', interval:'1m', limit:1000,
+    min_confidence:0.65, stop_loss_pct:0.005, take_profit_pct:0.008,
+    hft_mode:'balanced', enable_long:true, enable_short:true,
+    trade_size_usd:10, leverage:5,
+  });
+  const [btLoading, setBtLoading] = useState(false);
+  const [btResult,  setBtResult]  = useState(null);
+  const [btError,   setBtError]   = useState('');
+  const runBacktest = async () => {
+    setBtLoading(true); setBtError(''); setBtResult(null);
+    try {
+      const r = await authFetch('/api/backtest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(btForm)});
+      const d = await r.json();
+      if (d.ok) { setBtResult(d); showToast(`✅ 回测完成 ${d.total_trades}笔交易`,'success'); }
+      else setBtError(d.error || '回测失败');
+    } catch(e) { setBtError(e.message); }
+    finally { setBtLoading(false); }
+  };
 
   // 设置
   const [settings, setSettings] = useState({
@@ -2238,7 +2258,7 @@ function App() {
               <h3>⚙️ HFT 策略设置</h3>
               {/* 设置子 Tab */}
               <div style={{display:'flex',gap:3,marginBottom:14,background:'rgba(0,245,255,0.03)',borderRadius:6,padding:'3px',border:'1px solid rgba(0,245,255,0.1)',width:'fit-content'}}>
-                {[['basic','⚙️ 基础'],['risk','🛡️ 风控'],['symbols','🌐 币种'],['advanced','🔬 高级']].map(([k,l])=>(
+                {[['basic','⚙️ 基础'],['risk','🛡️ 风控'],['symbols','🌐 币种'],['advanced','🔬 高级'],['backtest','📊 回测']].map(([k,l])=>(
                   <button key={k} onClick={()=>setSettingsTab(k)}
                     style={{padding:'5px 14px',borderRadius:4,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,transition:'all .2s',
                       background:settingsTab===k?'rgba(0,245,255,0.15)':'transparent',
@@ -2877,6 +2897,161 @@ function App() {
                 </div>
               </div>
               )}
+
+              {/* ══ 回测 Tab ══ */}
+              {settingsTab === 'backtest' && (
+                  <div className="settings-form">
+                    {/* 参数设置 */}
+                    <div style={{background:'rgba(0,245,255,0.03)',border:'1px solid rgba(0,245,255,0.1)',borderRadius:8,padding:14,marginBottom:14}}>
+                      <div style={{fontWeight:700,fontSize:12,color:'var(--cyan)',marginBottom:10}}>📊 回测参数</div>
+                      <div className="form-row-2">
+                        <div className="form-group">
+                          <label>交易对</label>
+                          <select value={btForm.symbol} onChange={e=>setBtForm(p=>({...p,symbol:e.target.value}))}>
+                            {['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','ARBUSDT','AVAXUSDT','DOGEUSDT','XRPUSDT'].map(s=>(
+                              <option key={s} value={s}>{s.replace('USDT','/USDT')}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>K线周期</label>
+                          <select value={btForm.interval} onChange={e=>setBtForm(p=>({...p,interval:e.target.value}))}>
+                            <option value="1m">1分钟</option>
+                            <option value="5m">5分钟</option>
+                            <option value="15m">15分钟</option>
+                            <option value="1h">1小时</option>
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>K线数量 <span style={{fontSize:10,color:'var(--text-dim)'}}>最多3000</span></label>
+                          <input type="number" min="200" max="3000" value={btForm.limit}
+                            onChange={e=>setBtForm(p=>({...p,limit:+e.target.value}))} />
+                        </div>
+                        <div className="form-group">
+                          <label>HFT模式</label>
+                          <select value={btForm.hft_mode} onChange={e=>setBtForm(p=>({...p,hft_mode:e.target.value}))}>
+                            <option value="conservative">精准</option>
+                            <option value="balanced">平衡</option>
+                            <option value="aggressive">激进</option>
+                            <option value="turbo">极速</option>
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>止损(%)</label>
+                          <input type="number" step="0.1" min="0.1" value={(btForm.stop_loss_pct*100).toFixed(1)}
+                            onChange={e=>setBtForm(p=>({...p,stop_loss_pct:+e.target.value/100}))} />
+                        </div>
+                        <div className="form-group">
+                          <label>止盈(%)</label>
+                          <input type="number" step="0.1" min="0.1" value={(btForm.take_profit_pct*100).toFixed(1)}
+                            onChange={e=>setBtForm(p=>({...p,take_profit_pct:+e.target.value/100}))} />
+                        </div>
+                        <div className="form-group">
+                          <label>置信度阈值</label>
+                          <input type="number" step="0.01" min="0.5" max="0.95" value={btForm.min_confidence}
+                            onChange={e=>setBtForm(p=>({...p,min_confidence:+e.target.value}))} />
+                        </div>
+                        <div className="form-group">
+                          <label>每笔USD</label>
+                          <input type="number" min="1" value={btForm.trade_size_usd}
+                            onChange={e=>setBtForm(p=>({...p,trade_size_usd:+e.target.value}))} />
+                        </div>
+                      </div>
+                      <button className="btn-primary" onClick={runBacktest} disabled={btLoading}
+                        style={{marginTop:8,width:'100%'}}>
+                        {btLoading ? '⏳ 回测中...' : '🚀 开始回测'}
+                      </button>
+                      {btError && <div className="alert alert-error" style={{marginTop:8}}>{btError}</div>}
+                    </div>
+
+                    {/* 回测结果 */}
+                    {btResult && (()=>{ const r = btResult;
+                      const statCards = [
+                        {label:'总盈亏',val:`${r.total_pnl>=0?'+':''}${r.total_pnl} U`,color:r.total_pnl>=0?'var(--cyan)':'var(--pink)'},
+                        {label:'胜率',val:`${r.win_rate}%`,color:r.win_rate>=55?'var(--cyan)':r.win_rate>=40?'var(--yellow)':'var(--pink)'},
+                        {label:'总交易数',val:r.total_trades,color:'var(--text)'},
+                        {label:'盈/亏',val:`${r.wins}/${r.losses}`,color:'var(--text-mid)'},
+                        {label:'盈利因子',val:r.profit_factor,color:r.profit_factor>=1.5?'var(--cyan)':r.profit_factor>=1?'var(--yellow)':'var(--pink)'},
+                        {label:'最大回撤',val:`${r.max_drawdown} U`,color:'var(--pink)'},
+                        {label:'平均盈利',val:`+${r.avg_win} U`,color:'var(--cyan)'},
+                        {label:'平均亏损',val:`${r.avg_loss} U`,color:'var(--pink)'},
+                      ];
+                      return (
+                        <div>
+                          <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:8}}>
+                            {r.symbol} · {r.interval} · {r.bars}根K线 ({r.bars}根)
+                          </div>
+                          {/* 统计卡片 */}
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14}}>
+                            {statCards.map((c,i)=>(
+                              <div key={i} style={{background:'rgba(0,245,255,0.03)',border:'1px solid rgba(0,245,255,0.08)',borderRadius:6,padding:'8px 10px',textAlign:'center'}}>
+                                <div style={{fontSize:10,color:'var(--text-dim)',marginBottom:3}}>{c.label}</div>
+                                <div style={{fontWeight:800,fontSize:13,color:c.color,fontFamily:'monospace'}}>{c.val}</div>
+                              </div>
+                            ))}
+                          </div>
+                          {/* 收益曲线 */}
+                          {r.equity_curve && r.equity_curve.length > 1 && (
+                            <div style={{marginBottom:14}}>
+                              <div style={{fontSize:11,fontWeight:700,color:'var(--cyan)',marginBottom:6}}>📈 收益曲线</div>
+                              <ResponsiveContainer width="100%" height={120}>
+                                <AreaChart data={r.equity_curve} margin={{top:2,right:8,left:0,bottom:0}}>
+                                  <defs>
+                                    <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="5%" stopColor="#00f5ff" stopOpacity={0.3}/>
+                                      <stop offset="95%" stopColor="#00f5ff" stopOpacity={0}/>
+                                    </linearGradient>
+                                  </defs>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,245,255,0.06)" vertical={false}/>
+                                  <XAxis dataKey="ts" hide/>
+                                  <YAxis hide/>
+                                  <Tooltip contentStyle={{background:'var(--bg2)',border:'1px solid rgba(0,245,255,0.2)',borderRadius:6,fontSize:11}}
+                                    formatter={(v)=>[`${v>=0?'+':''}${v} U`,'累计盈亏']} />
+                                  <ReferenceLine y={0} stroke="rgba(0,245,255,0.2)"/>
+                                  <Area type="monotone" dataKey="equity" stroke="#00f5ff" strokeWidth={1.5} fill="url(#btGrad)" dot={false} isAnimationActive={false}/>
+                                </AreaChart>
+                              </ResponsiveContainer>
+                            </div>
+                          )}
+                          {/* 交易列表 */}
+                          {r.trades && r.trades.length > 0 && (
+                            <div>
+                              <div style={{fontSize:11,fontWeight:700,color:'var(--cyan)',marginBottom:6}}>📋 最近交易记录（最多50笔）</div>
+                              <div style={{maxHeight:220,overflowY:'auto'}}>
+                                <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                                  <thead>
+                                    <tr style={{color:'var(--text-dim)',borderBottom:'1px solid rgba(0,245,255,0.1)'}}>
+                                      {['开仓时间','平仓时间','方向','开仓价','平仓价','盈亏','原因'].map(h=>(
+                                        <th key={h} style={{padding:'4px 6px',fontWeight:600,textAlign:'left'}}>{h}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {[...r.trades].reverse().map((t,i)=>(
+                                      <tr key={i} style={{borderBottom:'1px solid rgba(0,245,255,0.04)',color:'var(--text-mid)'}}>
+                                        <td style={{padding:'3px 6px',color:'var(--text-dim)',fontSize:10}}>{t.open_ts}</td>
+                                        <td style={{padding:'3px 6px',color:'var(--text-dim)',fontSize:10}}>{t.close_ts}</td>
+                                        <td style={{padding:'3px 6px',color:t.side==='BUY'?'var(--cyan)':'var(--pink)',fontWeight:700}}>{t.side==='BUY'?'▲多':'▼空'}</td>
+                                        <td style={{padding:'3px 6px',fontFamily:'monospace'}}>{t.entry}</td>
+                                        <td style={{padding:'3px 6px',fontFamily:'monospace'}}>{t.exit}</td>
+                                        <td style={{padding:'3px 6px',fontWeight:700,color:t.pnl>0?'var(--cyan)':'var(--pink)'}}>{t.pnl>0?'+':''}{t.pnl}</td>
+                                        <td style={{padding:'3px 6px',color:t.reason==='止盈'?'var(--cyan)':t.reason==='止损'?'var(--pink)':'var(--text-dim)',fontSize:10}}>{t.reason}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                          {r.total_trades === 0 && (
+                            <div className="alert alert-warn">⚠️ 该参数组合在此时间段内未触发任何交易信号，请调低置信度或切换HFT模式。</div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+              )}
+
             </div>
 
           )}
