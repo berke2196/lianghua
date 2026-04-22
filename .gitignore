@@ -87,3 +87,6 @@ trade_history_bak_*.json
 # 私有文档（不公开）
 搭建教程.md
 *.bat
+
+# 锁文件（避免Dependabot误报开发依赖漏洞）
+package-lock.json
