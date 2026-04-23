@@ -3483,18 +3483,18 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
 
     sym_short = req.symbol.replace("USDT","")
 
-    # 搜索空间（4×4×3×2 = 96 种组合）
+    # 搜索空间（4×5×4 = 80 种组合，mode不影响回测结果故固定用用户当前值）
     sl_list   = [0.003, 0.005, 0.008, 0.012]
-    tp_list   = [0.006, 0.010, 0.015, 0.020]
-    conf_list = [0.60,  0.65,  0.70]
-    mode_list = ["balanced", "aggressive"]
+    tp_list   = [0.006, 0.010, 0.015, 0.020, 0.025]
+    conf_list = [0.58, 0.60, 0.65, 0.70]
+    cur_mode  = req.hft_mode or "balanced"
 
     # 构建所有参数组合
     combos = [
         {"stop_loss_pct": sl, "take_profit_pct": tp, "min_confidence": conf,
-         "hft_mode": mode, "enable_long": req.enable_long, "enable_short": req.enable_short}
-        for sl in sl_list for tp in tp_list if tp > sl
-        for conf in conf_list for mode in mode_list
+         "hft_mode": cur_mode, "enable_long": req.enable_long, "enable_short": req.enable_short}
+        for sl in sl_list for tp in tp_list if tp > sl * 1.5
+        for conf in conf_list
     ]
 
     # 当前参数配置（用于对比）
@@ -3509,13 +3509,18 @@ async def run_backtest_optimize(req: BacktestRequest, user=Depends(get_current_u
 
     # 所有计算全部卸到线程池，避免阻塞事件循环
     def _grid_search():
-        # 预计算一次全量信号数组，96组参数复用，O(N²)→O(N+96N)
+        # 预计算一次全量信号数组，所有参数组合复用，O(N²)→O(N+80N)
         precomp = _precompute_signals(data, sym_short)
         out = []
+        seen = set()
         for cfg in combos:
             stats = _run_bt_core(data, sym_short, cfg, req.trade_size_usd, req.leverage, signals=precomp)
             if stats["total_trades"] >= 3:
-                out.append({**cfg, **stats})
+                # 去重：相同(sl,tp,conf)只保留一条
+                key = (cfg["stop_loss_pct"], cfg["take_profit_pct"], cfg["min_confidence"])
+                if key not in seen:
+                    seen.add(key)
+                    out.append({**cfg, **stats})
         cur_stats = _run_bt_core(data, sym_short, current_cfg, req.trade_size_usd, req.leverage, signals=precomp)
         return out, cur_stats
 
