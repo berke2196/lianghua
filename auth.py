@@ -71,14 +71,23 @@ def revoke_token(token: str):
             # 同步清除 active 记录（避免登出后旧jti仍占位）
             if _active_jti.get(uid) == jti:
                 _active_jti.pop(uid, None)
-            # 防止无限增长：超过 10000 条时只清除已过期的 jti，不整体清空
+            # 防止无限增长：超过 10000 条时只清除已过期的 jti
             if len(_revoked_jtis) > 10000:
-                now_ts = int(time.time())
-                expired_jtis = [j for j, ex in list(_revoked_jtis.items()) if ex < now_ts]
-                for j in expired_jtis:
-                    _revoked_jtis.pop(j, None)
+                cleanup_revoked_jtis()
     except Exception:
         pass
+
+def clear_active_jti(user_id: int):
+    """踢下线 / 登出时主动清除该用户的单设备 jti 记录"""
+    _active_jti.pop(user_id, None)
+
+def cleanup_revoked_jtis():
+    """清理黑名单中已过期的 jti 条目，防止内存无限增长；由定时任务定期调用"""
+    now_ts = int(time.time())
+    expired = [j for j, ex in list(_revoked_jtis.items()) if ex < now_ts]
+    for j in expired:
+        _revoked_jtis.pop(j, None)
+    return len(expired)
 
 def decode_token(token: str) -> dict:
     try:
