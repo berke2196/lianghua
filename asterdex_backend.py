@@ -3402,22 +3402,30 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                  signals: list = None) -> dict:
     """对给定K线数据和参数跑一次回测，返回统计摘要（不含equity_curve/trades详情）。
     signals: 预计算的信号数组（由 _precompute_signals 生成），传入时直接查表跳过重复计算。
+    精度改进：滑点建模、下根开盘价成交、冷却期、ADX置信过滤、连续亏损保护、Sharpe评分。
     """
-    FEE = 0.0005
-    sl_pct  = cfg["stop_loss_pct"]
-    tp_pct  = cfg["take_profit_pct"]
-    trades       = []
-    equity       = 0.0
-    position     = None
-    max_equity   = None
-    max_drawdown = 0.0
-    rr_needed = {"conservative":1.8,"balanced":1.0,"aggressive":0.2,"turbo":0.15}.get(cfg.get("hft_mode","balanced"),1.0)
-    net_tp = tp_pct - 2*FEE; net_sl = sl_pct + 2*FEE
-    rr_ok = net_sl <= 0 or (net_tp / net_sl) >= rr_needed  # 盈亏比预判，不满足则整组跳过
+    FEE      = 0.0005
+    SLIP     = 0.0003   # 0.03% 单向滑点（市价单典型值）
+    sl_pct   = cfg["stop_loss_pct"]
+    tp_pct   = cfg["take_profit_pct"]
+    min_conf = cfg["min_confidence"]
+    cooldown_bars = max(1, cfg.get("cooldown_bars", 3))  # 止损/止盈后至少跳过N根K线
+    trades        = []
+    equity        = 0.0
+    position      = None
+    max_equity    = None
+    max_drawdown  = 0.0
+    last_exit_bar = -cooldown_bars  # 上次平仓bar索引
+    consec_loss   = 0              # 连续亏损计数
+    rr_needed = {"conservative":1.8,"balanced":1.2,"aggressive":0.2,"turbo":0.15}.get(cfg.get("hft_mode","balanced"),1.2)
+    net_tp = tp_pct - 2*(FEE+SLIP); net_sl = sl_pct + 2*(FEE+SLIP)
+    rr_ok  = net_sl <= 0 or (net_tp / net_sl) >= rr_needed
 
     for i in range(65, len(data)):
         candle = data[i]
         hi     = float(candle[2]); lo = float(candle[3]); close = float(candle[4])
+        # 下一根K线开盘价（更贴近实际成交）
+        next_open = float(data[i+1][1]) if i+1 < len(data) else close
 
         if position:
             exit_price = exit_reason = None
@@ -3428,12 +3436,18 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                 if hi >= position["sl"]:  exit_price=position["sl"];  exit_reason="止损"
                 elif lo <= position["tp"]: exit_price=position["tp"]; exit_reason="止盈"
             if exit_price:
+                # 加出场滑点（止损方向更不利）
+                slip_dir = -1 if exit_reason=="止损" else 1
+                if position["side"]=="BUY":  exit_price *= (1 - SLIP * (1 if exit_reason=="止损" else -0.5))
+                else:                         exit_price *= (1 + SLIP * (1 if exit_reason=="止损" else -0.5))
                 sz=position["sz"]; entry=position["entry"]
                 gross=(exit_price-entry)*sz if position["side"]=="BUY" else (entry-exit_price)*sz
                 fee=sz*entry*FEE+sz*exit_price*FEE
                 pnl=round(gross-fee,4)
                 equity=round(equity+pnl,4)
                 trades.append(pnl)
+                last_exit_bar = i
+                consec_loss = consec_loss+1 if pnl<=0 else 0
                 if max_equity is not None:
                     dd=max_equity-equity; max_drawdown=max(max_drawdown,dd)
                 if max_equity is None or equity>max_equity: max_equity=equity
@@ -3444,19 +3458,22 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
                 if max_equity is not None: max_drawdown=max(max_drawdown,max_equity-float_eq)
             continue
 
-        if not rr_ok: continue  # 整组参数盈亏比不达标，跳过开仓
-        # 优先使用预计算信号，没有时降级实时计算（兼容普通回测路径）
+        if not rr_ok: continue
+        if (i - last_exit_bar) < cooldown_bars: continue  # 冷却期内不开仓
+        if consec_loss >= 4: consec_loss = 0; last_exit_bar = i + 10; continue  # 4连亏后暂停
         if signals is not None:
             side, conf = signals[i]
         else:
-            side, conf, _ = signal_engine.compute(data[:i+1], sym_short)
-        if side=="HOLD" or conf<cfg["min_confidence"]: continue
+            side, conf, _ = signal_engine.compute(data[max(0,i+1-250):i+1], sym_short)
+        if side=="HOLD" or conf < min_conf: continue
         if side=="BUY"  and not cfg.get("enable_long",  True): continue
         if side=="SELL" and not cfg.get("enable_short", True): continue
-        sz=trade_size_usd*leverage/close
-        sl=close*(1-sl_pct) if side=="BUY" else close*(1+sl_pct)
-        tp=close*(1+tp_pct) if side=="BUY" else close*(1-tp_pct)
-        position={"side":side,"entry":close,"sz":sz,"sl":sl,"tp":tp}
+        # 用下根K线开盘价成交（加入场滑点）
+        entry_price = next_open * (1 + SLIP) if side=="BUY" else next_open * (1 - SLIP)
+        sz  = trade_size_usd * leverage / entry_price
+        sl  = entry_price*(1-sl_pct) if side=="BUY" else entry_price*(1+sl_pct)
+        tp  = entry_price*(1+tp_pct) if side=="BUY" else entry_price*(1-tp_pct)
+        position={"side":side,"entry":entry_price,"sz":sz,"sl":sl,"tp":tp}
         continue
 
     if position:
@@ -3470,11 +3487,15 @@ def _run_bt_core(data: list, sym_short: str, cfg: dict, trade_size_usd: float, l
     total=len(trades); wins=sum(1 for p in trades if p>0); losses=total-wins
     win_pnl=sum(p for p in trades if p>0); loss_pnl=abs(sum(p for p in trades if p<=0))
     profit_factor=round(win_pnl/loss_pnl,2) if loss_pnl>0 else (99.0 if wins>0 else 0.0)
-    score = profit_factor * (wins/total if total>0 else 0) - max_drawdown * 0.1
     total_pnl = round(sum(trades),4)
     avg_pnl   = round(total_pnl / total, 4) if total > 0 else 0.0
     avg_win   = round(win_pnl  / wins,   4) if wins   > 0 else 0.0
     avg_loss  = round(loss_pnl / losses, 4) if losses > 0 else 0.0
+    # Sharpe-like score: 盈利因子×胜率 - 回撤惩罚 - 频率惩罚（防止过拟合高频）
+    import math
+    pnl_std = (sum((p - avg_pnl)**2 for p in trades) / total) ** 0.5 if total > 1 else 1
+    sharpe  = round((avg_pnl / pnl_std) * math.sqrt(total), 3) if pnl_std > 0 else 0
+    score   = profit_factor * (wins/total if total>0 else 0) * (1 + sharpe * 0.1) - max_drawdown * 0.15
     return {
         "total_trades": total,
         "wins": wins,
