@@ -833,6 +833,7 @@ async def _guardian_close(symbol: str, price: float, exit_reason: str, uid: int 
         asyncio.create_task(alerting.alert_position_closed(symbol, _pnl, exit_reason, uid=uid))
     except Exception as e:
         logger.error(f"守护平仓失败 {symbol}: {e}")
+        _pt.clear(symbol)  # 失败时也清除tracker，防止反复触发
     finally:
         _gc.discard(symbol)
 
@@ -1864,7 +1865,7 @@ def _log_trade(symbol, side, price, sz, strategy, confidence, result, failed=Fal
     _st.trade_logs.insert(0, entry)
     _st.trade_logs = _st.trade_logs[:500]
     _st.perf["total_trades"] += 1
-    if side == "CLOSE":
+    if side == "CLOSE" and status == "filled":  # 只有真正成交才更新盈亏统计
         if pnl > 0:
             _st.perf["wins"]   = _st.perf.get("wins", 0) + 1
         elif pnl < 0:
