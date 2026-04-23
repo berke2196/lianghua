@@ -254,7 +254,12 @@ function App() {
   // ─── JWT 初始化：有 token 直接进登录页，并自动拉取已保存的地址 ───
   useEffect(() => {
     if (jwtToken && authUser) {
-      _setView('login');
+      // 若直接访问 /beishen/admin 且是管理员，直接进后台
+      if (window.location.pathname === '/beishen/admin' && isAdmin) {
+        _setView('admin'); loadAdminData('all');
+      } else {
+        _setView('login');
+      }
       // 自动拉取上次登录保存的 wallet/signer
       fetch(API('/api/auth/saved-credentials'), {
         headers: { 'Authorization': `Bearer ${jwtToken}` }
@@ -269,6 +274,9 @@ function App() {
           }));
         }
       }).catch(() => {});
+    } else if (window.location.pathname === '/beishen/admin') {
+      // 未登录但访问后台路径 → 进认证页
+      _setView('auth');
     }
   }, []); // eslint-disable-line
 
@@ -318,7 +326,12 @@ function App() {
         localStorage.setItem('jwt_token', d.token);
         localStorage.setItem('auth_user', d.username);
         localStorage.setItem('is_admin', d.is_admin ? '1' : '0');
-        _setView('login');
+        // 若在 /beishen/admin 路径登录且是管理员，直接进后台
+        if (window.location.pathname === '/beishen/admin' && d.is_admin) {
+          _setView('admin'); loadAdminData('all');
+        } else {
+          _setView('login');
+        }
       } else setAuthError(d.msg);
     } catch { setAuthError('网络错误，无法连接服务器'); }
     setAuthLoading(false);
