@@ -263,7 +263,8 @@ function App() {
             ...p,
             user: d.user,
             signer: d.signer || '',
-            private_key: d.private_key || '',
+            // 私钥不通过接口返回，用户需手动输入；has_key=true 时显示提示
+            _has_saved_key: !!d.has_key,
           }));
         }
       }).catch(() => {});
@@ -1188,7 +1189,7 @@ function App() {
                   <div className="form-group">
                     <label style={{display:'flex',alignItems:'center',gap:6}}>
                       API 钉包私钥 （Private Key）
-                      {loginForm.private_key && <span style={{fontSize:10,color:'var(--cyan)',background:'rgba(0,245,255,0.1)',padding:'1px 6px',borderRadius:3}}>✓ 已自动填入</span>}
+                      {loginForm.private_key ? <span style={{fontSize:10,color:'var(--cyan)',background:'rgba(0,245,255,0.1)',padding:'1px 6px',borderRadius:3}}>✓ 已输入</span> : loginForm._has_saved_key ? <span style={{fontSize:10,color:'var(--yellow)',background:'rgba(255,230,0,0.08)',padding:'1px 6px',borderRadius:3}}>🔑 有历史记录，请重新输入</span> : null}
                     </label>
                     <input
                       type="password"
@@ -3290,9 +3291,15 @@ function App() {
           {/* ── 管理后台 ── */}
           {view === 'admin' && isAdmin && (
             <div style={{padding:24,maxWidth:900,margin:'0 auto'}}>
-              <div style={{marginBottom:20,display:'flex',alignItems:'center',gap:12}}>
-                <span style={{fontSize:22}}>🛡️</span>
-                <h2 style={{background:'linear-gradient(135deg,#ffb400,#ff6b00)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:20,fontWeight:900,letterSpacing:2,margin:0}}>管理后台</h2>
+              <div style={{marginBottom:20,display:'flex',alignItems:'center',gap:12,justifyContent:'space-between'}}>
+                <div style={{display:'flex',alignItems:'center',gap:12}}>
+                  <span style={{fontSize:22}}>🛡️</span>
+                  <h2 style={{background:'linear-gradient(135deg,#ffb400,#ff6b00)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',fontSize:20,fontWeight:900,letterSpacing:2,margin:0}}>管理后台</h2>
+                </div>
+                <button onClick={()=>{setChangePwdTarget(authUser);setChangePwdVal('');setChangePwdMsg('');}}
+                  style={{padding:'6px 14px',borderRadius:6,border:'1px solid rgba(255,180,0,0.4)',background:'rgba(255,180,0,0.08)',color:'#ffb400',cursor:'pointer',fontSize:12,fontWeight:600}}>
+                  🔑 修改我的密码
+                </button>
               </div>
 
               {/* Tab */}
