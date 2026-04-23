@@ -53,7 +53,7 @@ from db import (
     save_trade_log, load_trade_logs, load_user_settings, save_user_settings,
     admin_change_password,
 )
-from auth import create_token, get_current_user, get_admin_user, revoke_token, get_client_ip
+from auth import create_token, get_current_user, get_admin_user, revoke_token, get_client_ip, clear_active_jti, cleanup_revoked_jtis
 
 
 logging.basicConfig(
@@ -115,28 +115,14 @@ def R(path: str) -> str:
 
 print(f"[AsterDex] API prefix: /{_PREFIX}   (e.g. http://localhost:8000/{_PREFIX}/api/health)", flush=True)
 
-class _WSLogHandler(logging.Handler):
-    """将后端日志实时推送到前端 WebSocket liveLog（携带level用于前端着色）"""
-    _LEVEL_MAP = {"DEBUG": "debug", "INFO": "info", "WARNING": "warn", "ERROR": "error", "CRITICAL": "error"}
-    def emit(self, record: logging.LogRecord):
-        try:
-            msg   = record.getMessage()
-            ts    = datetime.now().strftime("%H:%M:%S")
-            level = self._LEVEL_MAP.get(record.levelname, "info")
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(broadcast("log", {"ts": ts, "text": msg, "level": level}))
-            )
-        except Exception:
-            pass
+_SECRET_KEY = os.getenv("SECRET_KEY", "changeme-please-set-secret-key")
+if _SECRET_KEY in ("changeme-please-set-secret-key", "", "changeme"):
+    print("[AsterDex] ⚠️  WARNING: SECRET_KEY 未设置或使用默认弱值！"
+          "请在 .env 中设置随机强密钥以保护用户私钥加密安全。"
+          "生成方式: python -c \"import secrets; print(secrets.token_hex(32))\"", flush=True)
 
 # 系统日志不再全局广播给所有用户（避免跨用户日志泄漏）
 # 用户级别日志通过 broadcast("log", ..., user_id=uid) 单独推送
-# _ws_log_handler = _WSLogHandler()
-# logger.addHandler(_ws_log_handler)
 
 # 持久化历史文件
 HISTORY_FILE = Path(__file__).parent / "trade_history.json"
@@ -197,12 +183,11 @@ def _save_history(logs: list, perf: dict):
         if len(dh) > 180:
             keep_keys = sorted(dh.keys())[-180:]
             perf["daily_history"] = {k: dh[k] for k in keep_keys}
-        global_cfg = {}  # legacy file no longer used for per-user storage
         content = json.dumps({
             "logs": clean_logs,
             "perf": perf,
             "symbol_settings": {},
-            "global_settings": global_cfg,
+            "global_settings": {},
         }, ensure_ascii=False, indent=2)
         # 原子写：先写临时文件，再替换，防止写到一半崩溃导致文件损坏
         tmp_file = HISTORY_FILE.with_suffix(".tmp")
@@ -258,6 +243,17 @@ EIP712_DOMAIN = {
 
 from contextlib import asynccontextmanager
 
+async def _jti_cleanup_loop():
+    """每小时清理一次 JWT jti 黑名单中已过期条目，防止内存无限增长"""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            n = cleanup_revoked_jtis()
+            if n:
+                logger.info(f"[AUTH] 已清理 {n} 个过期 jti")
+        except Exception as _e:
+            logger.warning(f"[AUTH] jti 清理失败: {_e}")
+
 @asynccontextmanager
 async def _lifespan(app):
     try:
@@ -266,6 +262,7 @@ async def _lifespan(app):
         pass
     # ── startup ──
     logger.debug("Telegram通知为每用户独立配置，登录时各自启动")
+    _jti_task = asyncio.create_task(_jti_cleanup_loop())
     logger.info("[AsterDex] lifespan startup complete, yielding")
     try:
         yield
@@ -273,6 +270,7 @@ async def _lifespan(app):
         logger.error(f"[AsterDex] lifespan yield exception: {_le}", exc_info=True)
         raise
     finally:
+        _jti_task.cancel()
         logger.warning("[AsterDex] lifespan shutdown")
 
 # ── slowapi 限速器 ──
@@ -2152,13 +2150,12 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
     else:
         _dev = 0.0  # K线数据不足时跳过插针检查
     if _dev > _SPIKE_PCT:
-            _spike_key = f"{symbol}_spike_log"
-            _cd_spike = _get_close_cooldown(uid)
-            if time.time() - _cd_spike.get(_spike_key, 0) >= 10:
-                _cd_spike[_spike_key] = time.time()
-                logger.warning(f"🛡️ {symbol} 插针保护触发：K线收盘={_kline_close:.4f} 实时市价={cur_mkt:.4f} 偏离={_dev:.2f}%>{_SPIKE_PCT}%，跳过")
-                asyncio.ensure_future(alerting.alert_spike_protection(symbol, _kline_close, cur_mkt, _dev, uid=uid))
-            return
+        _spike_key = f"{symbol}_spike_log"
+        if time.time() - _cd_ps.get(_spike_key, 0) >= 10:
+            _cd_ps[_spike_key] = time.time()
+            logger.warning(f"🛡️ {symbol} 插针保护触发：K线收盘={_kline_close:.4f} 实时市价={cur_mkt:.4f} 偏离={_dev:.2f}%>{_SPIKE_PCT}%，跳过")
+            asyncio.ensure_future(alerting.alert_spike_protection(symbol, _kline_close, cur_mkt, _dev, uid=uid))
+        return
 
     # ── 市价开仓（双层锁嵌套持有：全局锁 ⊃ 币种锁，两锁同时持有直到 tracker.record）──
     # 注意：必须嵌套持有，而不能先释放全局锁再等币种锁，否则两锁之间存在竞态窗口期
@@ -2283,6 +2280,32 @@ def _run_param_backtest(closed_trades: list) -> Dict:
     train_set = sorted_trades[:split]
     val_set   = sorted_trades[split:]
 
+    # 预按 open_conf 升序排列，供 _eval_params 使用 bisect 跳过低置信度行，O(N log N) 一次
+    import bisect as _bisect
+    def _sort_by_conf(trades):
+        return sorted(trades, key=lambda t: float(t.get("open_conf", 0)))
+    train_sorted = _sort_by_conf(train_set)
+    val_sorted   = _sort_by_conf(val_set)
+    train_confs  = [float(t.get("open_conf", 0)) for t in train_sorted]
+    val_confs    = [float(t.get("open_conf", 0)) for t in val_sorted]
+
+    def _eval_params_fast(sorted_list, confs, conf_thresh, sl, tp):
+        """按 conf_thresh 二分跳过低置信度，O(log N + K) 代替 O(N)"""
+        idx = _bisect.bisect_left(confs, conf_thresh)
+        subset = sorted_list[idx:]
+        closed_sub = [t for t in subset if float(t.get("pnl", 0)) != 0]
+        total = len(closed_sub)
+        if total == 0:
+            return None
+        wins    = sum(1 for t in closed_sub if float(t.get("pnl", 0)) > 0)
+        win_rate = wins / total
+        avg_pnl  = sum(float(t.get("pnl", 0)) for t in closed_sub) / total
+        net_tp  = tp - 2 * FEE_RATE
+        net_sl  = sl + 2 * FEE_RATE
+        rr      = round(net_tp / net_sl, 2) if net_sl > 0 else 0
+        score   = avg_pnl * win_rate * 100
+        return {"score": score, "win_rate": win_rate, "avg_pnl": avg_pnl, "total": total, "rr": rr}
+
     best_score = -999.0
     best_params = {}
     results = []
@@ -2296,12 +2319,12 @@ def _run_param_backtest(closed_trades: list) -> Dict:
                 if rr < 0.3:
                     continue
 
-                train = _eval_params(train_set, conf_thresh, sl, tp)
+                train = _eval_params_fast(train_sorted, train_confs, conf_thresh, sl, tp)
                 if not train or train["total"] < 8:
                     continue
 
                 # 验证集评估（样本不足时标注"验证集不足"）
-                val = _eval_params(val_set, conf_thresh, sl, tp) if len(val_set) >= 3 else None
+                val = _eval_params_fast(val_sorted, val_confs, conf_thresh, sl, tp) if len(val_set) >= 3 else None
                 val_score    = round(val["score"], 4)    if val else None
                 val_win_rate = round(val["win_rate"] * 100, 1) if val else None
                 val_avg_pnl  = round(val["avg_pnl"], 4)  if val else None
@@ -2544,6 +2567,7 @@ async def auth_logout(request: Request, user=Depends(get_current_user)):
     creds = request.headers.get("Authorization", "")
     if creds.startswith("Bearer "):
         revoke_token(creds[7:])
+    clear_active_jti(uid)
     # 同时清理交易状态
     st = get_user_state(uid)
     st.logged_in   = False
@@ -2771,6 +2795,7 @@ async def admin_kick_user(body: dict, user=Depends(get_admin_user)):
                 _task.cancel()
         st.trading_task = st.account_sync_task = st.ws_task = None
         st.kline_task = st.price_poll_task = st.user_data_task = None
+    clear_active_jti(uid)
     _user_states.pop(uid, None)
     _circuit.pop(uid, None)
     _sym_locks.pop(uid, None)
@@ -2925,22 +2950,18 @@ async def login(req: LoginRequest, user=Depends(get_current_user)):
 
 @app.get(R("/api/auth/saved-credentials"))
 async def get_saved_credentials(user=Depends(get_current_user)):
-    """返回该账号上次登录时保存的全部凭据（私钥解密后返回）"""
+    """返回该账号上次登录时保存的钱包/签名地址（私钥不通过接口返回，在服务端内存中直接使用）"""
     uid = int(user["sub"])
     try:
         cfg = get_user_config(uid)
         if cfg.get("wallet_address"):
-            pk_plain = ""
-            if cfg.get("encrypted_pk"):
-                try:
-                    pk_plain = decrypt_pk(uid, cfg["encrypted_pk"])
-                except Exception:
-                    pass
+            # 私钥只在服务端内存中存储和使用，不通过任何 HTTP 接口暴露明文
+            has_key = bool(cfg.get("encrypted_pk"))
             return {
                 "ok": True,
                 "user": cfg["wallet_address"],
                 "signer": cfg.get("signer_address") or "",
-                "private_key": pk_plain,
+                "has_key": has_key,
             }
     except Exception as _e:
         logger.warning(f"读取凭据失败: {_e}")
@@ -3343,11 +3364,16 @@ def _precompute_signals(data: list, sym_short: str) -> list:
     """
     预计算全量信号数组，每个 bar 只算一次，供所有参数组合复用。
     返回 list[(side, conf)]，长度 == len(data)，前 65 个为 ("HOLD", 0.0)。
-    把回测信号计算从 O(N²) 降为 O(N)。
+
+    优化：compute() 内部指标（RSI14/MACD26/ADX14/EMA60/Supertrend10）
+    最多需要约 250 根 K 线即可收敛，使用固定窗口切片代替从头切片，
+    将切片内存分配从 O(i) 降为 O(WINDOW)，避免大数据集时的 O(N²) 开销。
     """
+    _WINDOW = 250  # 足够所有内置指标收敛的最小历史窗口
     signals = [("HOLD", 0.0)] * len(data)
     for i in range(65, len(data)):
-        side, conf, _ = signal_engine.compute(data[:i+1], sym_short)
+        start = max(0, i + 1 - _WINDOW)
+        side, conf, _ = signal_engine.compute(data[start:i+1], sym_short)
         signals[i] = (side, conf)
     return signals
 
@@ -3669,6 +3695,7 @@ async def api_strategy_recommendations(user=Depends(get_current_user)):
         })
 
     # 分析最大回撤
+    max_drawdown = 0
     pnl_series = [t.get("pnl", 0) for t in closed]
     if pnl_series:
         cumsum = []
@@ -3693,14 +3720,76 @@ async def api_strategy_recommendations(user=Depends(get_current_user)):
                 "impact": "提高风险控制，可能牺牲一些盈利"
             })
 
+    max_consec_loss = 0  # 初始化，避免 closed 为空时 NameError
+    # ── 止损/止盈比率分析 ──
+    sl_pct = st.settings.get("stop_loss_pct", 0.005)
+    tp_pct = st.settings.get("take_profit_pct", 0.008)
+    FEE = 0.0005
+    net_rr = round((tp_pct - 2 * FEE) / (sl_pct + 2 * FEE), 2) if (sl_pct + 2 * FEE) > 0 else 0
+    if net_rr < 0.8:
+        recommendations.append({
+            "level": "critical",
+            "issue": "净盈亏比过低",
+            "current": f"净RR={net_rr}（止盈{tp_pct*100:.1f}% / 止损{sl_pct*100:.1f}%）",
+            "suggestion": f"将止盈提高到止损的 1.5x 以上，如止损{sl_pct*100:.1f}% → 止盈应≥{sl_pct*150:.2f}%",
+            "impact": "提升理论期望收益，减少手续费侵蚀"
+        })
+    elif net_rr < 1.2:
+        recommendations.append({
+            "level": "warning",
+            "issue": "盈亏比偏低",
+            "current": f"净RR={net_rr}",
+            "suggestion": "建议净RR≥1.2，适当拉大止盈或收紧止损",
+            "impact": "减少亏损笔对总盈亏的拖累"
+        })
+
+    # ── 手续费侵蚀率分析 ──
+    if closed:
+        total_fee = sum(abs(t.get("pnl", 0)) * 0 + (t.get("fee") or (t.get("notional", 0) or (t.get("price", 0) * t.get("size", 0))) * FEE * 2) for t in closed)
+        total_gross = sum(abs(t.get("pnl", 0)) for t in closed)
+        fee_ratio = round(total_fee / total_gross * 100, 1) if total_gross > 0 else 0
+        if fee_ratio > 40:
+            recommendations.append({
+                "level": "warning",
+                "issue": "手续费占比过高",
+                "current": f"手续费占盈亏绝对值的 {fee_ratio}%",
+                "suggestion": "增大单笔止盈目标或减少交易频率，使单笔收益覆盖手续费成本",
+                "impact": "降低交易摩擦，净盈利更可观"
+            })
+
+    # ── 连续亏损序列检测 ──
+    if closed:
+        max_consec_loss = cur_consec = 0
+        for t in closed:
+            if t.get("pnl", 0) <= 0:
+                cur_consec += 1
+                max_consec_loss = max(max_consec_loss, cur_consec)
+            else:
+                cur_consec = 0
+        if max_consec_loss >= 5:
+            recommendations.append({
+                "level": "warning",
+                "issue": f"最大连续亏损 {max_consec_loss} 笔",
+                "current": f"连续亏损序列峰值={max_consec_loss}笔",
+                "suggestion": "触发连续亏损≥3笔时考虑暂停策略，检查市场状态或切换 conservative 模式",
+                "impact": "防止趋势逆境时放大亏损"
+            })
+
     return {
         "ok": True,
         "closed_trades": len(closed),
+        "stats": {
+            "win_rate": round(win_rate, 1) if closed else 0,
+            "avg_pnl": round(total_pnl / len(closed), 4) if closed else 0,
+            "net_rr": net_rr,
+            "max_consec_loss": max_consec_loss if closed else 0,
+            "max_drawdown": round(max_drawdown, 4),
+        },
         "recommendations": recommendations,
         "current_settings": {
             "min_confidence": st.settings.get("min_confidence", 0.70),
-            "stop_loss_pct": st.settings.get("stop_loss_pct", 0.005),
-            "take_profit_pct": st.settings.get("take_profit_pct", 0.008),
+            "stop_loss_pct": sl_pct,
+            "take_profit_pct": tp_pct,
             "leverage": st.settings.get("leverage", 2),
             "hft_mode": st.settings.get("hft_mode", "balanced"),
         }
@@ -3799,6 +3888,7 @@ async def save_telegram_config(body: dict, user=Depends(get_current_user)):
     if len(token) > 128 or len(chat_id) > 32:
         return JSONResponse({"ok": False, "error": "token或chat_id格式不正确（长度超限）"}, status_code=400)
     save_user_config(uid, tg_token=token, tg_chat_id=chat_id)
+    alerting.invalidate_tg_cache(uid)  # 立即失效缓存，使新配置生效
     logger.info(f"✅ uid={uid} Telegram配置已保存")
     return {"ok": True, "message": "Telegram配置已保存"}
 
@@ -3926,7 +4016,7 @@ async def ws_frontend(ws: WebSocket, token: str = ""):
             "auto_trading": st.auto_trading,
             "performance":  {**st.perf, "win_rate": round(_w/_t*100,1) if _t else 0},
             "settings":     st.settings,
-            "trade_logs":   st.trade_logs[:200],
+            "trade_logs":   st.trade_logs[:500],
             "market_prices": {k: v for k, v in st.market_prices.items() if not k.endswith("USDT")},
         }})
         await ws.send_text(init_payload)

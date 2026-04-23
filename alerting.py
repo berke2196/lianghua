@@ -19,15 +19,31 @@ _THROTTLE_SECS = 60  # 同类消息最短间隔60s
 # 防洪泛：按 (uid, key) 记录上次发送时间
 _last_sent: dict = {}
 
+# get_user_tg 内存缓存：减少 command_loop 每 20s 一次的 DB 查询
+_tg_cache: dict = {}   # uid -> (token, chat_id, cached_at)
+_TG_CACHE_TTL = 30     # 缓存 TTL（秒），配置变更后最多 30s 生效
+
 
 def get_user_tg(uid: int) -> Tuple[str, str]:
-    """从数据库读取指定用户的 tg_token / tg_chat_id，失败返回空串"""
+    """从数据库读取指定用户的 tg_token / tg_chat_id，失败返回空串（带 30s 内存缓存）"""
+    now = time.time()
+    cached = _tg_cache.get(uid)
+    if cached and now - cached[2] < _TG_CACHE_TTL:
+        return cached[0], cached[1]
     try:
         from db import get_user_config
         cfg = get_user_config(uid)
-        return cfg.get("tg_token", "") or "", cfg.get("tg_chat_id", "") or ""
+        token   = cfg.get("tg_token",   "") or ""
+        chat_id = cfg.get("tg_chat_id", "") or ""
+        _tg_cache[uid] = (token, chat_id, now)
+        return token, chat_id
     except Exception:
         return "", ""
+
+
+def invalidate_tg_cache(uid: int) -> None:
+    """保存 Telegram 配置后主动失效缓存，使新配置立即生效"""
+    _tg_cache.pop(uid, None)
 
 
 def is_user_enabled(uid: int) -> bool:
@@ -350,3 +366,5 @@ async def command_loop(get_state_fn, set_trading_fn, uid: int = 0):
         except Exception as e:
             logger.warning(f"命令轮询异常 uid={uid}: {e}")
             await asyncio.sleep(5)  # 异常退避，防止频繁触发 Telegram 429
+            continue
+        await asyncio.sleep(1)  # 正常循环兜底间隔，防止 Telegram 立即返回空列表时 CPU 空转

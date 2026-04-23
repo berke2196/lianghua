@@ -90,6 +90,8 @@ def init_db():
             ts          TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_trade_logs_user ON trade_logs(user_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_trade_logs_ts ON trade_logs(ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_login_log_ts ON login_log(ts DESC);
 
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id     INTEGER PRIMARY KEY REFERENCES users(id),
@@ -108,6 +110,9 @@ def init_db():
                 c.execute(f"ALTER TABLE user_configs ADD COLUMN {_col} {_def}")
             except Exception:
                 pass
+        # 迁移：补建索引（已存在时 IF NOT EXISTS 静默跳过）
+        c.execute("CREATE INDEX IF NOT EXISTS idx_trade_logs_ts ON trade_logs(ts DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_login_log_ts ON login_log(ts DESC)")
 
 # ── 密码工具 ──────────────────────────────────────────
 def hash_password(pw: str) -> str:
@@ -250,16 +255,17 @@ def save_user_config(user_id: int, **kwargs):
     if not kwargs:
         return
     with _conn() as c:
-        exists = c.execute("SELECT 1 FROM user_configs WHERE user_id=?", (user_id,)).fetchone()
-        if exists:
-            sets = ", ".join(f"{k}=?" for k in kwargs)
-            vals = list(kwargs.values()) + [user_id]
-            c.execute(f"UPDATE user_configs SET {sets}, updated_at=datetime('now') WHERE user_id=?", vals)
-        else:
-            kwargs["user_id"] = user_id
-            cols = ", ".join(kwargs.keys())
-            qs = ", ".join("?" * len(kwargs))
-            c.execute(f"INSERT INTO user_configs ({cols}) VALUES ({qs})", list(kwargs.values()))
+        # 先确保行存在，再用 UPDATE 仅覆盖指定字段（避免 INSERT OR REPLACE 清空未传字段）
+        c.execute(
+            "INSERT OR IGNORE INTO user_configs (user_id) VALUES (?)",
+            (user_id,)
+        )
+        sets = ", ".join(f"{k}=?" for k in kwargs)
+        vals = list(kwargs.values()) + [user_id]
+        c.execute(
+            f"UPDATE user_configs SET {sets}, updated_at=datetime('now') WHERE user_id=?",
+            vals
+        )
 
 def list_licenses(page: int = 1, size: int = 200) -> list:
     with _conn() as c:
@@ -334,11 +340,17 @@ def ensure_admin(admin_password: str):
     with _conn() as c:
         row = c.execute("SELECT id, password_hash FROM users WHERE is_admin=1").fetchone()
         if not row:
+            # INSERT OR IGNORE 防 email/username UNIQUE 冲突（旧数据已存在时静默跳过再 UPDATE）
             c.execute(
-                "INSERT INTO users (username, email, password_hash, is_active, is_admin) VALUES (?,?,?,1,1)",
+                "INSERT OR IGNORE INTO users (username, email, password_hash, is_active, is_admin) VALUES (?,?,?,1,1)",
                 ("admin", "admin@local", hash_password(admin_password))
             )
-            print(f"[DB] 管理员账号已创建: admin")
+            # 若因 IGNORE 未插入，强制将已有 admin 账号设为管理员并同步密码
+            c.execute(
+                "UPDATE users SET is_active=1, is_admin=1, password_hash=? WHERE username='admin'",
+                (hash_password(admin_password),)
+            )
+            print(f"[DB] 管理员账号已创建/同步: admin")
         elif not verify_password(admin_password, row["password_hash"]):
             c.execute("UPDATE users SET password_hash=? WHERE id=?",
                       (hash_password(admin_password), row["id"]))
