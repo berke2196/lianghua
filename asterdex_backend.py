@@ -368,9 +368,9 @@ class TradingState:
             "symbol": "BTCUSDT",
             "leverage": 5,
             "trade_size_usd": 10,
-            "min_confidence": 0.70,
-            "stop_loss_pct": 0.005,
-            "take_profit_pct": 0.008,
+            "min_confidence": 0.72,
+            "stop_loss_pct": 0.010,
+            "take_profit_pct": 0.025,
             "enable_long": True,
             "enable_short": True,
             "max_open_positions": 3,
@@ -379,7 +379,7 @@ class TradingState:
             "hft_interval_ms": 500,
             "hft_mode": "balanced",  # conservative/balanced/aggressive/turbo
             "max_position_usd": 200,
-            "cooldown_secs": 60,
+            "cooldown_secs": 180,
             "size_mode": "fixed",    # "fixed"=固定USD / "pct"=余额百分比
             "size_pct": 20,          # size_mode=pct时：每笔下单占可用余额的百分比
             # EMA
@@ -1600,7 +1600,7 @@ class CryptoHFTEngine:
         elif mode == "turbo":
             rr_thresh, ranging_disc, adx_min = 0.15, 1.0, 12
         else:  # balanced
-            rr_thresh, ranging_disc, adx_min = 1.0, 0.85, 20
+            rr_thresh, ranging_disc, adx_min = 1.2, 0.80, 25
 
         # 严格用配置值做盈亏比校验（与实际开仓止盈止损一致）
         dyn_tp = tp_pct
