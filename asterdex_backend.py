@@ -1892,6 +1892,8 @@ def _log_trade(symbol, side, price, sz, strategy, confidence, result, failed=Fal
     asyncio.create_task(broadcast("new_trade", entry, user_id=uid))
     asyncio.create_task(broadcast("performance", _st.perf, user_id=uid))
     if side == "CLOSE":
+        asyncio.create_task(asyncio.get_event_loop().run_in_executor(
+            None, save_user_settings, uid if uid else 0, _st.settings, _st.perf))
         closed_count = len([t for t in _st.trade_logs if t.get("side") == "CLOSE"])
         if closed_count >= MIN_TRADES_FOR_OPT and closed_count % 20 == 0:
             asyncio.create_task(run_auto_optimize(uid=uid))
@@ -2444,6 +2446,23 @@ def get_user_state(user_id: int):
             if _saved_perf:
                 st.perf.update(_saved_perf)
             st.trade_logs = load_trade_logs(user_id, limit=500)
+            # 若 DB perf 为空（新库/迁移），从 trade_logs 重建
+            if st.perf.get("total_trades", 0) == 0 and st.trade_logs:
+                closes = [t for t in st.trade_logs if t.get("side") == "CLOSE"]
+                if closes:
+                    pnls = [t.get("pnl", 0) for t in closes]
+                    wins = sum(1 for p in pnls if p > 0)
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    daily_pnl = round(sum(t.get("pnl", 0) for t in closes
+                                         if (t.get("ts") or t.get("time", "")).startswith(today)), 4)
+                    st.perf.update({
+                        "total_trades": len(closes),
+                        "wins": wins,
+                        "losses": len(closes) - wins,
+                        "total_pnl": round(sum(pnls), 4),
+                        "daily_pnl": daily_pnl,
+                        "win_rate": round(wins / len(closes) * 100, 1),
+                    })
         except Exception as _e:
             logger.warning(f"加载用户 {user_id} 数据失败: {_e}")
         _user_states[user_id] = st
