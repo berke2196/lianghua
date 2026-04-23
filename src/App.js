@@ -249,7 +249,7 @@ function App() {
       showToast('⚠️ 登录已过期，请重新登录', 'error');
     }
     return res;
-  }, [showToast]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showToast]); // eslint-disable-line
 
   // ─── JWT 初始化：有 token 直接进登录页，并自动拉取已保存的地址 ───
   useEffect(() => {
