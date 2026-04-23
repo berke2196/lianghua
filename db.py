@@ -11,9 +11,10 @@ load_dotenv()
 
 DB_PATH = os.environ.get("DB_PATH", str(Path(__file__).parent / "asterdex.db"))
 
-# ── 账号锁定配置 ──
-_MAX_ATTEMPTS   = 5    # 连续失败 N 次锁定
-_LOCK_MINUTES   = 15   # 锁定时长（分钟）
+# ── 账号锁定配置（三级递进）──
+# 错 3 次 → 锁 5 分钟；错 5 次 → 锁 30 分钟；错 10 次 → 封号（需客服解封）
+_LOCK_STAGES    = [(3, 5), (5, 30)]  # (失败次数阈值, 锁定分钟数)
+_BAN_ATTEMPTS   = 10   # 达到此次数直接封号
 _PW_MIN_LEN     = 8    # 最短密码长度
 _USERNAME_RE    = re.compile(r'^[a-zA-Z0-9_]{3,32}$')
 _EMAIL_RE       = re.compile(r'^[^@\s]{1,64}@[^@\s]{1,255}$')
@@ -151,12 +152,22 @@ def _is_locked(user: sqlite3.Row) -> bool:
 def _record_failure(c, user_id: int):
     attempts = c.execute("SELECT failed_attempts FROM users WHERE id=?", (user_id,)).fetchone()[0]
     attempts += 1
-    if attempts >= _MAX_ATTEMPTS:
-        locked_until = (datetime.utcnow() + timedelta(minutes=_LOCK_MINUTES)).isoformat()
-        c.execute("UPDATE users SET failed_attempts=?, locked_until=? WHERE id=?",
-                  (attempts, locked_until, user_id))
+    if attempts >= _BAN_ATTEMPTS:
+        # 封号：locked_until 设为 9999 年，需管理员手动解封
+        c.execute("UPDATE users SET failed_attempts=?, locked_until=?, is_banned=1 WHERE id=?",
+                  (attempts, "9999-12-31T23:59:59", user_id))
     else:
-        c.execute("UPDATE users SET failed_attempts=? WHERE id=?", (attempts, user_id))
+        lock_mins = 0
+        for threshold, mins in reversed(_LOCK_STAGES):
+            if attempts >= threshold:
+                lock_mins = mins
+                break
+        if lock_mins:
+            locked_until = (datetime.utcnow() + timedelta(minutes=lock_mins)).isoformat()
+            c.execute("UPDATE users SET failed_attempts=?, locked_until=? WHERE id=?",
+                      (attempts, locked_until, user_id))
+        else:
+            c.execute("UPDATE users SET failed_attempts=? WHERE id=?", (attempts, user_id))
 
 def _record_success(c, user_id: int):
     c.execute("UPDATE users SET failed_attempts=0, locked_until=NULL, last_login_at=datetime('now') WHERE id=?",
@@ -230,10 +241,16 @@ def login_user(username: str, password: str) -> dict:
         # 密码验证
         if not verify_password(password, user["password_hash"]):
             _record_failure(c, user["id"])
-            remaining = _MAX_ATTEMPTS - (user["failed_attempts"] + 1)
-            if remaining <= 0:
-                return {"ok": False, "msg": f"密码错误，账号已锁定 {_LOCK_MINUTES} 分钟"}
-            return {"ok": False, "msg": f"用户名或密码错误（还有 {remaining} 次机会）"}
+            new_attempts = user["failed_attempts"] + 1
+            if new_attempts >= _BAN_ATTEMPTS:
+                return {"ok": False, "msg": "密码错误次数过多，账号已封禁，请联系客服解封"}
+            # 提示下一级锁定
+            for threshold, mins in _LOCK_STAGES:
+                if new_attempts >= threshold:
+                    return {"ok": False, "msg": f"密码错误，账号已锁定 {mins} 分钟"}
+            next_lock = next((t for t, _ in _LOCK_STAGES if t > new_attempts), _BAN_ATTEMPTS)
+            remaining = next_lock - new_attempts
+            return {"ok": False, "msg": f"用户名或密码错误（再错 {remaining} 次将触发锁定）"}
         # 激活检查
         if not user["is_active"]:
             return {"ok": False, "msg": "账号未激活，请先使用授权码激活"}
