@@ -136,20 +136,21 @@ function App() {
       const r = await safeAuthFetch('/api/backtest/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(fullParams)});
       const d = await r.json();
       if (d.ok) {
-        // 同步到本地 settings state，然后自动持久化保存
+        // 同步到回测所选币种的独立设置
+        const targetSym = btForm.symbol || settings.symbol || 'BTCUSDT';
+        const nextSymSettings = {...symbolSettings};
+        nextSymSettings[targetSym] = {...(nextSymSettings[targetSym]||{}), ...fullParams};
+        // 更新本地 symbolSettings state，防止后续保存操作覆盖掉刚写入的币种策略
+        setSymbolSettings(nextSymSettings);
         setSettings(p => {
           const next = {...p, ...fullParams};
-          // 同步到回测所选币种的独立设置（无论是否已有独立设置都写入）
-          const targetSym = btForm.symbol || p.symbol || 'BTCUSDT';
-          const nextSymSettings = {...symbolSettings};
-          nextSymSettings[targetSym] = {...(nextSymSettings[targetSym]||{}), ...fullParams};
-          // 异步触发 /api/settings 持久化（用最新 next 构造 payload）
+          // 异步触发 /api/settings 持久化
           const { symbol_settings: _drop, ...globalOnly } = next;
           safeAuthFetch('/api/settings', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({...globalOnly, symbol_settings: nextSymSettings}),
           }).then(r2 => r2.json()).then(d2 => {
-            if (d2.ok) showToast('✅ 回测参数已应用并保存（策略/金额/杠杆/方向/币种）','success');
+            if (d2.ok) showToast(`✅ ${targetSym} 策略已应用并保存（策略/金额/杠杆/方向）`,'success');
             else showToast(`⚠️ 参数已应用，但保存失败: ${d2.error||''}`, 'warn');
           }).catch(()=>showToast('⚠️ 参数已应用，但保存请求失败','warn'));
           return next;
