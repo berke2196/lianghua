@@ -165,11 +165,11 @@ function App() {
     strategy: 'multi',
     symbol: 'BTCUSDT',
     leverage: 5,
-    stop_loss_pct: 0.005,
-    take_profit_pct: 0.008,
+    stop_loss_pct: 0.008,
+    take_profit_pct: 0.020,
     enable_long: true,
     enable_short: true,
-    trade_size_usd: 10,
+    trade_size_usd: 15,
     min_confidence: 0.70,
     // EMA
     ema_fast: 5, ema_slow: 20, ema_long: 60,
@@ -178,8 +178,8 @@ function App() {
     // RSI
     rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
     // Risk
-    max_open_positions: 3, max_daily_loss_usd: 50, max_position_usd: 500, max_trade_usd: 30,
-    cancel_on_reverse: true, hft_interval_ms: 500,
+    max_open_positions: 2, max_daily_loss_usd: 50, max_position_usd: 200, max_trade_usd: 30,
+    cancel_on_reverse: false, hft_interval_ms: 500,
     cooldown_secs: 60,
     spike_protection_pct: 0.8,
     hft_mode: 'balanced',  // balanced模式RR≥1.2，收支平衡起点
@@ -205,7 +205,7 @@ function App() {
     reverse_tp_tf: 'off',       // off / 5m / 15m
     // 止损设置
     stop_loss_type: 'pct',      // pct / usd
-    stop_loss_pct_val: 40,      // 止损比例%
+    stop_loss_pct_val: 0.8,     // 止损比例%
     stop_loss_usd_val: 50,      // 止损金额
     enable_reverse_sl: false,
   });
