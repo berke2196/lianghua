@@ -2657,74 +2657,15 @@ function App() {
                   </>)}
                 </div>
 
-                {/* 止盈设置 */}
-                <div style={{background:'rgba(0,245,100,0.03)',border:'1px solid rgba(0,245,100,0.1)',borderRadius:8,padding:'12px',marginBottom:14}}>
-                  <div style={{fontWeight:700,fontSize:12,color:'var(--green)',marginBottom:10}}>💰 止盈设置</div>
-                  <div className="form-row-2" style={{marginBottom:8}}>
-                    <div className="form-group">
-                      <label>止盈方式</label>
-                      <select value={settings.take_profit_mode} onChange={e=>setSettings(p=>({...p,take_profit_mode:e.target.value}))}>
-                        <option value="all">全仓止盈</option>
-                        <option value="tail">尾单止盈</option>
-                        <option value="custom">自定义</option>
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label>止盈类型</label>
-                      <select value={settings.take_profit_type} onChange={e=>setSettings(p=>({...p,take_profit_type:e.target.value}))}>
-                        <option value="static">静态止盈</option>
-                        <option value="trailing">移动止盈</option>
-                      </select>
-                    </div>
-                    {settings.take_profit_type==='trailing' && (
-                      <div className="form-group">
-                        <label>回调比例(%)</label>
-                        <input type="number" step="0.1" min="0.1" max="10" value={settings.trailing_callback_pct}
-                          onChange={e=>setSettings(p=>({...p,trailing_callback_pct:+e.target.value}))} />
-                      </div>
-                    )}
-                    <div className="form-group">
-                      <label>止盈比例(%) <span style={{fontSize:9,color:'var(--text-dim)'}}>触发止盈的涨幅</span></label>
-                      <input type="number" step="0.1" min="0.1" value={(settings.take_profit_pct*100).toFixed(1)}
-                        onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} />
-                    </div>
-                  </div>
-                </div>
-
-                {/* 止损设置 */}
-                <div style={{background:'rgba(255,45,120,0.03)',border:'1px solid rgba(255,45,120,0.1)',borderRadius:8,padding:'12px',marginBottom:14}}>
-                  <div style={{fontWeight:700,fontSize:12,color:'var(--pink)',marginBottom:10}}>🛑 止损设置</div>
-                  <div className="form-row-2" style={{marginBottom:8}}>
-                    <div className="form-group">
-                      <label>止损类型</label>
-                      <select value={settings.stop_loss_type} onChange={e=>setSettings(p=>({...p,stop_loss_type:e.target.value}))}>
-                        <option value="pct">比例止损</option>
-                        <option value="usd">金额止损</option>
-                      </select>
-                    </div>
-                    {settings.stop_loss_type==='pct' ? (
-                      <div className="form-group">
-                        <label>止损比例(%)</label>
-                        <input type="number" step="1" min="1" max="100" value={settings.stop_loss_pct_val}
-                          onChange={e=>setSettings(p=>({...p,stop_loss_pct_val:+e.target.value}))} />
-                      </div>
-                    ) : (
-                      <div className="form-group">
-                        <label>止损金额(USD)</label>
-                        <input type="number" step="1" min="1" value={settings.stop_loss_usd_val}
-                          onChange={e=>setSettings(p=>({...p,stop_loss_usd_val:+e.target.value}))} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-
                 <div className="form-row-2" style={{marginTop:8}}>
+                  <div className="form-group"><label>💰 止盈比例(%)</label><input type="number" step="0.1" min="0.1" value={(settings.take_profit_pct*100).toFixed(1)} onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} /></div>
+                  <div className="form-group"><label>🛑 止损比例(%)</label><input type="number" step="0.1" min="0.1" max="100" value={(settings.stop_loss_pct*100).toFixed(1)} onChange={e=>setSettings(p=>({...p,stop_loss_pct:+e.target.value/100}))} /></div>
                   <div className="form-group"><label>最大持仓数</label><input type="number" value={settings.max_open_positions} onChange={e=>setSettings(p=>({...p,max_open_positions:+e.target.value}))} /></div>
                   <div className="form-group"><label>日亏损限额(USD)</label><input type="number" value={settings.max_daily_loss_usd} onChange={e=>setSettings(p=>({...p,max_daily_loss_usd:+e.target.value}))} /></div>
                   <div className="form-group"><label>HFT间隔(ms)</label><input type="number" value={settings.hft_interval_ms} onChange={e=>setSettings(p=>({...p,hft_interval_ms:+e.target.value}))} /></div>
                   <div className="form-group">
                     <label>平仓冷却(秒) <span style={{color:'var(--yellow)',fontSize:10}}>防反复横跳</span></label>
-                    <input type="number" min="0" max="300" value={settings.cooldown_secs} onChange={e=>setSettings(p=>({...p,cooldown_secs:+e.target.value}))} />
+                    <input type="number" min="0" max="600" value={settings.cooldown_secs} onChange={e=>setSettings(p=>({...p,cooldown_secs:+e.target.value}))} />
                   </div>
                   <div className="form-group">
                     <label style={{display:'flex',justifyContent:'space-between'}}>
