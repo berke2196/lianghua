@@ -375,7 +375,7 @@ class TradingState:
             "enable_short": True,
             "max_open_positions": 3,
             "max_daily_loss_usd": 50,
-            "cancel_on_reverse": True,
+            "cancel_on_reverse": False,
             "hft_interval_ms": 500,
             "hft_mode": "balanced",  # conservative/balanced/aggressive/turbo
             "max_position_usd": 200,
@@ -1893,7 +1893,7 @@ def _log_trade(symbol, side, price, sz, strategy, confidence, result, failed=Fal
     asyncio.create_task(broadcast("new_trade", entry, user_id=uid))
     asyncio.create_task(broadcast("performance", _st.perf, user_id=uid))
     if side == "CLOSE":
-        asyncio.create_task(asyncio.get_event_loop().run_in_executor(
+        asyncio.ensure_future(asyncio.get_event_loop().run_in_executor(
             None, save_user_settings, uid if uid else 0, _st.settings, _st.perf))
         closed_count = len([t for t in _st.trade_logs if t.get("side") == "CLOSE"])
         if closed_count >= MIN_TRADES_FOR_OPT and closed_count % 20 == 0:
@@ -1927,10 +1927,8 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
     cooldown = sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60))  # 优先币种独立冷却
     _mode = sym_cfg.get("hft_mode") or s.get("hft_mode") or _st.settings.get("hft_mode", "balanced")
     if _mode in ("aggressive", "turbo"):
-        cooldown = min(cooldown, 10)  # 激进模式最多等10s，不被用户全局冷却卡死
-    # Fix1: 反向平仓专用冷却：不受 aggressive/turbo 模式缩短，固定至少60s
-    # 防止震荡行情中反复触发反向平仓→开仓→再平仓的连续亏损循环
-    _REVERSE_COOLDOWN = max(sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60)), 60)
+        cooldown = min(cooldown, 30)  # 激进模式最少等30s，防止SL后立即重入
+    _POST_CLOSE_COOLDOWN = max(sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60)), 60)
 
     # ── 止损/止盈/移动止损（优先级最高）统一走_guardian_close防重复平仓 ──
     _pt_ps = get_pos_tracker(uid)
@@ -1961,42 +1959,7 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
         await broadcast("indicators_push", ind_data, user_id=uid)
 
     if has_position:
-        # 持仓中只检查反向信号，其余静默
-        tracker_entry = _pt_ps.entries.get(symbol)
-        pos_side_src = existing["side"] if existing else (tracker_entry.get("side") if tracker_entry else None)
-        if pos_side_src and side != "HOLD":
-            pos_side = pos_side_src if pos_side_src in ("BUY","SELL") else ("BUY" if pos_side_src=="LONG" else "SELL")
-            is_reverse = (pos_side == "BUY" and side == "SELL") or \
-                         (pos_side == "SELL" and side == "BUY")
-            cancel_on_reverse = sym_cfg.get("cancel_on_reverse", s.get("cancel_on_reverse", False))
-            if is_reverse and cancel_on_reverse and confidence >= sym_cfg.get("min_confidence", s.get("min_confidence", 0.70)):
-                if symbol in _gc_ps:
-                    return  # 守护平仓进行中，跳过
-                logger.info(f"↩️ {symbol} 反向平仓 {pos_side}→{side} conf={confidence:.3f}")
-                _gc_ps.add(symbol)
-                _rev_te = dict(_pt_ps.entries.get(symbol, {}))  # 平仓前快照
-                _rev_sz = existing["size"] if existing else (tracker_entry.get("sz",0) if tracker_entry else 0)
-                try:
-                    await cancel_all_orders(symbol, user_id=uid)
-                    result = await close_position(symbol, user_id=uid)
-                    _log_trade(symbol, "CLOSE", price, _rev_sz, "reverse_signal", confidence, result, open_ctx=_rev_te.get("open_ctx"), uid=uid)
-                    _rev_pnl = 0.0
-                    if _rev_te:
-                        _ep2 = _rev_te.get("entry", price)
-                        _sz2 = float(_rev_te.get("sz", _rev_sz) or _rev_sz)
-                        _gross2 = (price - _ep2) * _sz2 if _rev_te.get("side") == "BUY" else (_ep2 - price) * _sz2
-                        _rev_pnl = round(_gross2 - _sz2 * _ep2 * FEE_RATE - _sz2 * price * FEE_RATE, 4)
-                    _pt_ps.clear(symbol)
-                    # Fix1: 反向平仓写入专用冷却时间，不受 aggressive/turbo 缩短（固定≥60s）
-                    _cd_ps[symbol] = time.time()
-                    _cd_ps[f"{symbol}_reverse_cd"] = time.time()  # 反向平仓标记，冷却检查时使用
-                    pnl_str2 = f"+${_rev_pnl:.4f}" if _rev_pnl >= 0 else f"-${abs(_rev_pnl):.4f}"
-                    await broadcast("log", {"ts": datetime.now().strftime("%H:%M:%S"),
-                        "text": f"↩️ {symbol} 反向平仓 {pos_side} @ {price:.4f} 盈亏:{pnl_str2} ⏳冷却{_REVERSE_COOLDOWN}s"}, user_id=uid)
-                    asyncio.create_task(alerting.alert_position_closed(symbol, _rev_pnl, "反向信号", uid=uid))
-                finally:
-                    _gc_ps.discard(symbol)
-        return  # 持仓中不开新仓，静默
+        return  # 持仓中不开新仓，等止损/止盈自动平仓
 
     if side == "HOLD":
         return  # 无信号
@@ -2025,9 +1988,9 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
             asyncio.ensure_future(alerting.alert_circuit_breaker(daily_pnl, max_daily_loss, uid=uid))
         return
 
-    # Fix1: 反向平仓后的冷却使用专用时长（不受 aggressive/turbo 模式缩短）
+    # SL/TP平仓后强制60s冷却，防止止损后立即重入
     _reverse_cd_ts = _cd_ps.get(f"{symbol}_reverse_cd", 0)
-    _effective_cooldown = _REVERSE_COOLDOWN if (time.time() - _reverse_cd_ts < _REVERSE_COOLDOWN) else cooldown
+    _effective_cooldown = _POST_CLOSE_COOLDOWN if (time.time() - _reverse_cd_ts < _POST_CLOSE_COOLDOWN) else cooldown
     last_close = _cd_ps.get(symbol, 0)
     if time.time() - last_close < _effective_cooldown:
         remaining = int(_effective_cooldown - (time.time() - last_close))
