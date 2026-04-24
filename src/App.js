@@ -2657,7 +2657,18 @@ function App() {
                   </>)}
                 </div>
 
-                <div className="form-row-2" style={{marginTop:8}}>
+                {(() => {
+                  const rrVal = ((settings.take_profit_pct - 0.001) / (settings.stop_loss_pct + 0.001));
+                  const rrOk = rrVal >= 1.2;
+                  return (
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,padding:'6px 10px',background:'rgba(0,245,100,0.04)',border:`1px solid ${rrOk?'rgba(0,245,100,0.25)':'rgba(255,45,120,0.35)'}`,borderRadius:6}}>
+                    <span style={{fontSize:11,color:'var(--text-dim)'}}>盈亏比</span>
+                    <span style={{fontSize:14,fontWeight:700,color: rrOk?'var(--green)':'var(--pink)'}}>{rrVal.toFixed(2)}x</span>
+                    <span style={{fontSize:10,color:'var(--text-dim)'}}>止盈{(settings.take_profit_pct*100).toFixed(1)}% / 止损{(settings.stop_loss_pct*100).toFixed(1)}%</span>
+                    {!rrOk && <span style={{fontSize:10,color:'var(--pink)'}}>⚠️ 低于1.2x阈值</span>}
+                  </div>);
+                })()}
+                <div className="form-row-2" style={{marginTop:4}}>
                   <div className="form-group"><label>💰 止盈比例(%)</label><input type="number" step="0.1" min="0.1" value={(settings.take_profit_pct*100).toFixed(1)} onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} /></div>
                   <div className="form-group"><label>🛑 止损比例(%)</label><input type="number" step="0.1" min="0.1" max="100" value={(settings.stop_loss_pct*100).toFixed(1)} onChange={e=>setSettings(p=>({...p,stop_loss_pct:+e.target.value/100}))} /></div>
                   <div className="form-group"><label>最大持仓数</label><input type="number" value={settings.max_open_positions} onChange={e=>setSettings(p=>({...p,max_open_positions:+e.target.value}))} /></div>

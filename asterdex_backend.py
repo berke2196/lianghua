@@ -1322,13 +1322,13 @@ class CryptoHFTEngine:
     """基于真实K线OHLCV的7维度加权信号引擎"""
 
     WEIGHTS = {
-        "supertrend": 0.22,
-        "ema":        0.20,
-        "macd":       0.15,
-        "rsi":        0.15,
-        "vwap":       0.12,
-        "obi":        0.11,
-        "momentum":   0.05,
+        "supertrend": 0.28,
+        "ema":        0.22,
+        "macd":       0.18,
+        "momentum":   0.15,
+        "rsi":        0.10,
+        "vwap":       0.05,
+        "obi":        0.02,
     }
 
     # ── 指标计算 ──────────────────────────────
@@ -1492,6 +1492,12 @@ class CryptoHFTEngine:
         price   = closes[-1]
 
         scores: Dict[str, float] = {}
+
+        # ── 成交量过滤：低量行情不可靠 ──
+        if len(volumes) >= 10:
+            vol_ma = sum(volumes[-20:]) / min(20, len(volumes))
+            if volumes[-1] < vol_ma * 0.4:  # 当前量不足均量40%，跳过
+                return "HOLD", 0.0, {"_block": "量不足"}
 
         # ─── 市场状态预判断 ───
         adx = self._adx(highs, lows, closes)
@@ -1686,10 +1692,22 @@ class PositionTracker:
         # sl或tp为0说明记录不完整，跳过防止误触发
         if e["sl"] <= 0 or e["tp"] <= 0:
             return None
+        # 保本止损：价格到达TP的60%时，把SL移到入场价+手续费缓冲（锁住利润）
+        entry = e["entry"]
         if e["side"] == "BUY":
+            tp_dist = e["tp"] - entry
+            if tp_dist > 0:
+                progress = (price - entry) / tp_dist
+                if progress >= 0.6 and e["sl"] < entry:
+                    e["sl"] = round(entry * 1.0005, 8)  # 入场价+0.05%手续费缓冲
             if price <= e["sl"]: return "STOP_LOSS"
             if price >= e["tp"]: return "TAKE_PROFIT"
         else:  # SELL
+            tp_dist = entry - e["tp"]
+            if tp_dist > 0:
+                progress = (entry - price) / tp_dist
+                if progress >= 0.6 and e["sl"] > entry:
+                    e["sl"] = round(entry * 0.9995, 8)  # 入场价-0.05%手续费缓冲
             if price >= e["sl"]: return "STOP_LOSS"
             if price <= e["tp"]: return "TAKE_PROFIT"
         return None
@@ -1999,6 +2017,14 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
                 "text": f"⏳ {symbol} 冷却中，还需 {remaining}s"}, user_id=uid)
         return
 
+    # 相关性过滤：BTC/ETH高度相关，同向不双开，避免集中风险
+    _CORR = {"BTCUSDT": ["ETHUSDT"], "ETHUSDT": ["BTCUSDT"]}
+    for _corr_sym in _CORR.get(symbol, []):
+        _corr_entry = _pt_ps.entries.get(_corr_sym)
+        if _corr_entry and _corr_entry.get("side") == side:
+            logger.debug(f"🔗 {symbol} 与 {_corr_sym} 同向({side})相关，跳过")
+            return
+
     # Fix2: max_open_positions 检查移入全局锁内（见开仓锁区域），此处仅做快速预检（无锁，可能有极小并发窗口）
     max_pos = sym_cfg.get("max_open_positions", s.get("max_open_positions", 3))
     open_count = len([p for p in _st.positions if abs(p.get("size", 0)) > 1e-9])
@@ -2145,8 +2171,13 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
             logger.info(f"📤 {symbol} 准备下单 side={side} sz={sz} trade_usd={trade_usd:.2f} lev={leverage}x")
             result = await place_order(symbol, side, "MARKET", sz, user_id=uid)
             if _order_ok(result):
-                sl_pct_cfg = sym_cfg.get("stop_loss_pct",  s.get("stop_loss_pct",  0.005))
-                tp_pct_cfg = sym_cfg.get("take_profit_pct", s.get("take_profit_pct", 0.008))
+                sl_pct_cfg = sym_cfg.get("stop_loss_pct",  s.get("stop_loss_pct",  0.008))
+                tp_pct_cfg = sym_cfg.get("take_profit_pct", s.get("take_profit_pct", 0.020))
+                # ATR动态SL/TP：1.2×ATR为止损，TP始终保持2.5xSL的盈亏比
+                if len(klines_now) >= 15 and atr_now > 0:
+                    atr_pct_now = atr_now / price
+                    sl_pct_cfg = max(sl_pct_cfg, min(atr_pct_now * 1.2, sl_pct_cfg * 2.5))
+                    tp_pct_cfg = sl_pct_cfg * 2.5
                 klines_now = kline_cache.get(symbol, [])
                 highs_now  = [float(k[2]) for k in klines_now]
                 lows_now   = [float(k[3]) for k in klines_now]
