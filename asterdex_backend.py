@@ -1926,9 +1926,7 @@ async def _process_symbol(symbol: str, s: dict, daily_start_ref: list = None, ui
     # 提前取冷却秒数（aggressive/turbo模式减半，高频不卡冷却）
     cooldown = sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60))  # 优先币种独立冷却
     _mode = sym_cfg.get("hft_mode") or s.get("hft_mode") or _st.settings.get("hft_mode", "balanced")
-    if _mode in ("aggressive", "turbo"):
-        cooldown = min(cooldown, 30)  # 激进模式最少等30s，防止SL后立即重入
-    _POST_CLOSE_COOLDOWN = max(sym_cfg.get("cooldown_secs", s.get("cooldown_secs", 60)), 60)
+    _POST_CLOSE_COOLDOWN = max(cooldown, 60)  # 平仓后至少60s，完全尊重用户冷却设置
 
     # ── 止损/止盈/移动止损（优先级最高）统一走_guardian_close防重复平仓 ──
     _pt_ps = get_pos_tracker(uid)

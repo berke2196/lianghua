@@ -2689,18 +2689,6 @@ function App() {
                         onChange={e=>setSettings(p=>({...p,take_profit_pct:+e.target.value/100}))} />
                     </div>
                   </div>
-                  <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
-                    <input type="checkbox" checked={settings.enable_reverse_tp}
-                      onChange={e=>setSettings(p=>({...p,enable_reverse_tp:e.target.checked}))} />
-                    反向止盈监测
-                    {settings.enable_reverse_tp && (
-                      <select value={settings.reverse_tp_tf} onChange={e=>setSettings(p=>({...p,reverse_tp_tf:e.target.value}))}
-                        style={{marginLeft:6,padding:'2px 6px',fontSize:11}}>
-                        <option value="5m">5分钟</option>
-                        <option value="15m">15分钟</option>
-                      </select>
-                    )}
-                  </label>
                 </div>
 
                 {/* 止损设置 */}
@@ -2728,18 +2716,6 @@ function App() {
                       </div>
                     )}
                   </div>
-                  <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12}}>
-                    <input type="checkbox" checked={settings.enable_reverse_sl}
-                      onChange={e=>setSettings(p=>({...p,enable_reverse_sl:e.target.checked}))} />
-                    反向止损
-                  </label>
-                </div>
-
-                <div className="form-row checkboxes">
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={settings.cancel_on_reverse} onChange={e=>setSettings(p=>({...p,cancel_on_reverse:e.target.checked}))} />
-                    <span>↩️ 反向自动撤单</span>
-                  </label>
                 </div>
 
                 <div className="form-row-2" style={{marginTop:8}}>
